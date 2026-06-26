@@ -1,0 +1,38 @@
+# LeRobot pi05 Inference Configuration (bi_s1)
+# ======================================
+# Usage:
+#   python scripts/serve_policy.py policy:checkpoint \
+#       --policy.config=configs/bi_s1/pi05_inference.yaml \
+#       --policy.dir=<checkpoint_path>
+#
+# All hyperparameters are specified directly in this YAML file.
+# CLI overrides are supported for any field:
+#   --policy.config=configs/bi_s1/pi05_inference.yaml --batch-size 64
+
+name: bi_s1_pi05
+exp_name: inference
+
+# ── Model ───────────────────────────────────────────────
+model:
+  _target_: Pi0Config
+  pi05: true
+  action_dim: 32
+  action_horizon: 16
+  max_token_len: 250
+  paligemma_variant: gemma_2b
+  action_expert_variant: gemma_300m
+
+# ── Data ────────────────────────────────────────────────
+data:
+  _target_: LeRobotDataConfig
+  robot_type: bi_s1
+  assets:
+    asset_id: bi_s1
+  camera_map:
+    front: base_0_rgb
+    left_wrist: left_wrist_0_rgb
+    right_wrist: right_wrist_0_rgb
+
+# ── Policy Metadata ─────────────────────────────────────
+policy_metadata:
+  robot: bi_s1

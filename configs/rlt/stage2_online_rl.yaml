@@ -1,0 +1,75 @@
+# Stage 2: Online RL Training (Algorithm 1)
+# ==========================================
+# Runs the online RL loop: VLA → RL Token → Actor → Environment
+# using TD3 with twin Q-critics and BC regularization.
+#
+# Usage:
+#   # Single GPU:
+#   python scripts/train_online_rl.py --config configs/rlt/stage2_online_rl.yaml
+#
+#   # Multi-GPU (DDP-aware, episode collection on rank 0):
+#   torchrun --standalone --nnodes=1 --nproc_per_node=4 \\
+#       scripts/train_online_rl.py --config configs/rlt/stage2_online_rl.yaml
+#
+#   # With overrides:
+#   python scripts/train_online_rl.py --config configs/rlt/stage2_online_rl.yaml \\
+#       --max-env-steps 200000
+
+# ── VLA ─────────────────────────────────────────────────
+vla_config_name: configs/bi_s1/pi05_finetune.yaml
+vla_checkpoint_dir: ""            # REQUIRED: path to model.safetensors
+
+# ── Stage 1 Checkpoint ─────────────────────────────────
+rl_token_checkpoint: ""           # REQUIRED: path to rl_token_stepN.pt
+
+# ── Action Space ────────────────────────────────────────
+action_dim: 8
+chunk_length: 10                  # C: action chunk length
+vla_action_horizon: 16            # H: VLA output horizon
+
+# ── Architecture ────────────────────────────────────────
+embedding_dim: 2048               # Must match Stage 1
+mlp_hidden_dim: 256
+mlp_num_hidden_layers: 2
+actor_noise_sigma: 0.1            # Exploration noise std
+ref_action_dropout: 0.5
+
+# ── RL Hyperparameters (TD3) ────────────────────────────
+gamma: 0.99
+tau: 0.005                        # Polyak averaging
+utd_ratio: 5                      # G: updates per env step
+bc_regularizer_beta: 0.5          # BC regularizer weight
+critic_updates_per_actor: 2
+target_noise_sigma: 0.2           # TD3 smoothing noise std
+target_noise_clip: 0.5
+
+# ── Learning Rates ──────────────────────────────────────
+actor_lr: 3.0e-4
+critic_lr: 3.0e-4
+
+# ── Replay Buffer ───────────────────────────────────────
+buffer_capacity: 100000
+batch_size: 256
+warmup_steps: 1000
+
+# ── Environment ─────────────────────────────────────────
+env_factory: ""                   # REQUIRED: e.g. my_package.envs.make_env
+intervention_factory: ""          # Optional: VR teleop intervention
+task_prompt: ""                   # Task instruction for VLA
+max_episode_chunks: 150
+
+# ── Training Loop ───────────────────────────────────────
+max_env_steps: 100000
+
+# ── Checkpoints ─────────────────────────────────────────
+resume_checkpoint: ""             # Resume from a Stage 2 checkpoint
+warmup_buffer: ""                 # Path to pre-filled warmup buffer .pt
+save_dir: checkpoints/online_rl
+run_name: ""                      # auto-generated if empty
+save_every: 50
+log_every: 1
+print_every: 100
+
+# ── wandb ───────────────────────────────────────────────
+wandb_project: rlt-openpi
+wandb_enabled: true
