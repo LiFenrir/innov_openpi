@@ -55,8 +55,7 @@ def warmup_start(total_chunks: int) -> None:
     print(_kv("Target chunks", str(total_chunks)))
     print(_kv("Controls",
               f"{BOLD}[S]{RESET}/{BOLD}[Space]{RESET}=success   "
-              f"{BOLD}[F]{RESET}=failure   "
-              f"{BOLD}[P]{RESET}=progress"))
+              f"{BOLD}[F]{RESET}=failure"))
     print()
 
 
@@ -92,8 +91,7 @@ def episode_running(episode_num: int) -> None:
     print()
     print(f"  {GREEN}{BOLD}▶ RUNNING{RESET}  —  "
           f"{BOLD}[S]{RESET}/{BOLD}[Space]{RESET}=success   "
-          f"{BOLD}[F]{RESET}=failure   "
-          f"{BOLD}[P]{RESET}=progress")
+          f"{BOLD}[F]{RESET}=failure")
     print()
 
 

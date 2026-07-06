@@ -59,11 +59,14 @@ task_prompt: ""                   # Task instruction for VLA
 max_episode_chunks: 150
 
 # ── Training Loop ───────────────────────────────────────
-max_env_steps: 100000
+max_env_steps: 10000000000
+
+# ── Critical Phase Switching (Section V) ────────────────
+critical_phase_only: false  # 仅关键阶段启用 RL，其余由 VLA 接管
 
 # ── Checkpoints ─────────────────────────────────────────
 resume_checkpoint: ""             # Resume from a Stage 2 checkpoint
-warmup_buffer: ""                 # Path to pre-filled warmup buffer .pt
+warmup_buffer: "checkpoints/online_rl/warmup_buffer.pt"
 save_dir: checkpoints/online_rl
 run_name: ""                      # auto-generated if empty
 save_every: 50
@@ -72,4 +75,4 @@ print_every: 100
 
 # ── wandb ───────────────────────────────────────────────
 wandb_project: rlt-openpi
-wandb_enabled: true
+wandb_enabled: false

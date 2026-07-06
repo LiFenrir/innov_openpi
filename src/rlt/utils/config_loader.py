@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
+import typing
 from typing import Any, TypeVar
 
 import yaml
@@ -35,7 +36,13 @@ def _dict_to_dataclass(data: dict[str, Any], cls: type[T]) -> T:
     if not dataclasses.is_dataclass(cls):
         return data
 
-    field_types = {f.name: f.type for f in dataclasses.fields(cls)}
+    # Use get_type_hints() to resolve string annotations caused by
+    # ``from __future__ import annotations``.
+    try:
+        field_types = typing.get_type_hints(cls)
+    except Exception:
+        field_types = {f.name: f.type for f in dataclasses.fields(cls)}
+
     kwargs: dict[str, Any] = {}
 
     for key, value in data.items():

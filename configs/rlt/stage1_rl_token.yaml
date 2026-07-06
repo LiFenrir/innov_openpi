@@ -27,9 +27,11 @@ train:
   # Training
   num_train_steps: 5000
   batch_size: 32
-  learning_rate: 1.0e-4
+  peak_lr: 1.0e-4
   weight_decay: 1.0e-5
   warmup_steps: 500
+  decay_steps: 5000
+  decay_lr: 1.0e-5
   max_grad_norm: 1.0
 
   # Joint training (set > 0 to fine-tune VLA alongside RL token)

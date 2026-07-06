@@ -139,9 +139,8 @@ class RobotEnv:
 
         Returns:
             next_obs: Observation dict after the last step.
-            rewards: Per-step rewards ``[C]``.  Terminal success gives +1;
-                progress keypresses (``p``) give +0.5 without ending
-                the episode.
+            rewards: Per-step rewards ``[C]``, only non-zero at terminal
+                step (success=+1, failure=0).
             done: Whether the episode ended.
             info: Contains ``"success"`` key on termination.
         """
@@ -167,9 +166,6 @@ class RobotEnv:
                     done = True
                     info["success"] = False
                     logger.info("Human signal: FAILURE")
-                elif signal == "p":
-                    rewards[k] = self._feedback.progress_reward
-                    logger.info("Human signal: PROGRESS (+%.2f)", self._feedback.progress_reward)
                 if done:
                     break
 

@@ -137,8 +137,9 @@ class RLTokenDecoder(nn.Module):
         # Memory = z_rl as a single token for cross-attention
         memory = z_rl.unsqueeze(1)  # [B, 1, D]
 
-        # Padding mask for target: same as input (True = IGNORE for pytorch)
-        tgt_key_padding_mask = ~pad_mask
+        # Padding mask for target: float mask (-inf = IGNORE, 0.0 = valid)
+        # Must match type of tgt_mask (float) to avoid deprecated warning
+        tgt_key_padding_mask = torch.where(pad_mask, 0.0, float("-inf"))
 
         out = self.transformer(
             tgt,

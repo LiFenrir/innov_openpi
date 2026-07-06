@@ -112,6 +112,7 @@ class OnlineRLTrainer:
             chunk_length=self.config.chunk_length,
             action_dim=self.config.action_dim,
             device=self.device,
+            critical_phase_only=self.config.critical_phase_only,
         )
 
     def _update_step(self, update_idx: int) -> dict[str, float]:

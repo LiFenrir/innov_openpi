@@ -43,11 +43,8 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
-import os
 import sys
-
-import torch
-import tyro
+from pathlib import Path
 
 from rlt.training.config import RLTokenTrainConfig
 from rlt.training.ddp_utils import cleanup_ddp, is_main_process, setup_ddp
@@ -57,7 +54,13 @@ from rlt.utils.config_loader import load_config_with_cli
 from rlt.utils.logging import Logger
 from openpi.training.vla_wrapper import VLAWrapper
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logging.getLogger().setLevel(logging.INFO)  # ensure root level even if basicConfig was a no-op
+logging.captureWarnings(True)  # route warnings to logging so they appear in run.log
 log = logging.getLogger(__name__)
 
 
@@ -113,6 +116,55 @@ def main(config: TrainConfig) -> None:
     main = is_main_process()
 
     if main:
+        # Set up file logging BEFORE any log messages so they all go to run.log
+        log_dir = Path(config.train.save_dir) / config.train.run_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Tee stdout/stderr to run.log (captures tqdm, print, everything) ──
+        log_file = open(log_dir / "run.log", "w")
+
+        class _TeeWriter:
+            """Duplicate writes to a file and the original stream.
+
+            ``\\r`` resets the file line buffer so tqdm progress bars
+            don't leave duplicate lines in the log file.
+            """
+
+            def __init__(self, file, stream):
+                self.file = file
+                self.stream = stream
+                self._line_buf = ""
+
+            def write(self, data):
+                self.stream.write(data)
+                for ch in data:
+                    if ch == "\r":
+                        self._line_buf = ""
+                    elif ch == "\n":
+                        self.file.write(self._line_buf + "\n")
+                        self._line_buf = ""
+                    else:
+                        self._line_buf += ch
+                self.file.flush()
+
+            def flush(self):
+                self.file.flush()
+                self.stream.flush()
+
+            def isatty(self):
+                return self.stream.isatty()
+
+        sys.stdout = _TeeWriter(log_file, sys.__stdout__)
+        sys.stderr = _TeeWriter(log_file, sys.__stderr__)
+
+        # Structured logging to the same file handle (preserves timestamps/levels)
+        file_handler = logging.StreamHandler(log_file)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
+        )
+        logging.getLogger().addHandler(file_handler)
+
+        log.info("Log file: %s", log_dir / "run.log")
         log.info("Stage 1 config: %s", config)
         log.info("DDP: %s, device: %s", "enabled" if use_ddp else "disabled", device)
 

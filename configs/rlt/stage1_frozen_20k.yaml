@@ -1,0 +1,51 @@
+# Stage 1: 冻结 VLA + 20000 步训练
+# =========================================
+# 延长训练步数到 20000，降低 L_ro 重构误差。
+#
+# Usage:
+#   python scripts/train_rl_token.py --config configs/rlt/stage1_frozen_20k.yaml
+
+# ── RL Token Trainer ────────────────────────────────────
+train:
+  # Architecture
+  embedding_dim: 2048
+  encoder_layers: 2
+  encoder_heads: 8
+  decoder_layers: 2
+  decoder_heads: 8
+
+  # Training (20000 steps)
+  num_train_steps: 20000
+  batch_size: 32
+  peak_lr: 1.0e-4
+  weight_decay: 1.0e-5
+  warmup_steps: 1000
+  decay_steps: 20000
+  decay_lr: 1.0e-5
+  max_grad_norm: 1.0
+
+  # Frozen VLA
+  vla_finetune_alpha: 0.0
+  vla_learning_rate: 1.0e-5
+  gradient_checkpointing: true
+
+  # Checkpoints
+  vla_checkpoint_dir: checkpoints/bi_s1_pi05_sft_shifted/bi_s1_sft_shifted_run/24000
+  vla_config_name: configs/bi_s1/pi05_finetune_sft_shifted.yaml
+  resume_checkpoint: ""
+  save_dir: checkpoints/rl_token
+  run_name: bi_s1_frozen_20k
+  save_every: 2000
+  log_every: 1
+  print_every: 100
+
+  # wandb
+  wandb_project: rlt-openpi
+  wandb_enabled: false
+
+# ── Dataset ─────────────────────────────────────────────
+repo_id: /home/kemove/VLA/datasets/bi_s1/bi_s1_sft_shifted
+
+data_transforms_fn: null
+
+num_workers: 4

@@ -18,10 +18,13 @@ class RLTokenTrainConfig:
     # Training
     num_train_steps: int = 5000
     batch_size: int = 32
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-4  # Alias for peak_lr (kept for backward compatibility)
     weight_decay: float = 1e-5
-    warmup_steps: int = 500  # Linear LR warmup steps (matches OpenPI default)
-    max_grad_norm: float = 1.0  # Global gradient norm clipping (matches OpenPI default)
+    warmup_steps: int = 500  # Linear LR warmup steps
+    max_grad_norm: float = 1.0  # Global gradient norm clipping
+    peak_lr: float = 1e-4  # Peak learning rate after warmup
+    decay_steps: int = 5000  # Total steps for cosine decay (matches OpenPI pattern)
+    decay_lr: float = 1e-5  # End learning rate after cosine decay
     vla_finetune_alpha: float = 0.0  # VLA fine-tuning weight (0 = frozen VLA)
     vla_learning_rate: float = 1e-5  # VLA fine-tuning learning rate (used when alpha > 0)
     gradient_checkpointing: bool = True  # Enable gradient checkpointing to reduce VRAM
@@ -89,6 +92,11 @@ class OnlineRLTrainConfig:
 
     # Training loop
     max_env_steps: int = 100_000
+
+    # Critical phase switching (Targeted improvement, Section V)
+    # When True, RL OFF (rl_active=False) transitions are skipped.
+    # Only RL ON transitions enter the replay buffer.
+    critical_phase_only: bool = False
 
     # Checkpoints
     rl_token_checkpoint: str = ""

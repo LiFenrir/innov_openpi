@@ -64,6 +64,7 @@ class RolloutWorker:
         chunk_length: int,
         action_dim: int,
         device: torch.device | str = "cuda",
+        critical_phase_only: bool = False,
     ) -> None:
         self.env = env
         self.vla = vla
@@ -74,6 +75,7 @@ class RolloutWorker:
         self.chunk_length = chunk_length
         self.action_dim = action_dim
         self.device = torch.device(device)
+        self.critical_phase_only = critical_phase_only
 
         self._action_chunk_dim = chunk_length * action_dim
 
@@ -205,18 +207,13 @@ class RolloutWorker:
     def collect_episode(self, store_transitions: bool = True) -> EpisodeStats:
         """Collect a single RL episode using the actor policy.
 
-        At each chunk boundary:
-        1. Extract z_rl and VLA reference actions
-        2. Form RL state x = cat(z_rl, s^p)
-        3. Check for human intervention
-        4. Run actor (or use human action) to get action chunk
-        5. Step environment for C steps
-        6. Store transition in replay buffer (if ``store_transitions``)
+        When ``critical_phase_only`` is True, transitions are only
+        stored when the Robot PC has RL toggled ON (``rl_active=True``).
+        RL OFF chunks are skipped entirely.
 
         Args:
             store_transitions: Whether to add transitions to the replay
-                buffer.  Set to ``False`` during evaluation to avoid
-                unnecessary buffer writes.
+                buffer.  Set to ``False`` during evaluation.
 
         Returns:
             Episode statistics.
@@ -224,14 +221,20 @@ class RolloutWorker:
         stats = EpisodeStats()
         obs = self.env.reset()
 
+        # 整个 episode 模式需要 skip 前 N 个 chunk 排空管道；
+        # 关键阶段模式 VLA 阶段已是 pipeline drain，不需要 skip。
+        skip_remaining = 0 if self.critical_phase_only else 10
+
         while True:
             # Extract RL state and VLA reference
             x, a_tilde_flat = self._extract_rl_state(obs)
+            vla_action = a_tilde_flat.reshape(self.chunk_length, self.action_dim)
 
-            # Check for human intervention.
-            # If the intervention manager stepped the robot internally
-            # (InterventionResult), we use its outputs directly and skip
-            # env.step().  Otherwise fall through to the actor.
+            # Set VLA reference on remote env so Robot PC can choose
+            if hasattr(self.env, "set_vla_action"):
+                self.env.set_vla_action(vla_action)
+
+            # Check for human intervention
             intervention: InterventionResult | None = None
             if self.intervention_mgr.check_intervention():
                 intervention = self.intervention_mgr.get_human_action(
@@ -249,25 +252,48 @@ class RolloutWorker:
                 action_chunk = self._get_actor_action(x, a_tilde_flat)
                 next_obs, rewards, done, info = self.env.step(action_chunk)
 
-            a_flat = action_chunk.reshape(-1)  # [C*d]
+            # 远程人类干预：单帧累积为 chunk
+            if info.get("intervention"):
+                stats.interventions += 1
+                human_frames: list[NDArray] = [np.asarray(info["action"], dtype=np.float32)]
 
+                # 循环收集直至攒满 chunk_length 帧或 episode 终止
+                while len(human_frames) < self.chunk_length and not done:
+                    placeholder = self._get_actor_action(x, a_tilde_flat)
+                    next_obs, frame_r, done, info = self.env.step(placeholder)
+                    if info.get("intervention"):
+                        human_frames.append(np.asarray(info["action"], dtype=np.float32))
+                    if done:
+                        rewards = frame_r  # 终止帧携带奖励信号
+
+                # 不足 C 帧时末尾帧补齐
+                while len(human_frames) < self.chunk_length:
+                    human_frames.append(human_frames[-1].copy())
+
+                action_chunk = np.stack(human_frames[: self.chunk_length])
+                info["steps_executed"] = min(len(human_frames), self.chunk_length)
+
+            a_flat = action_chunk.reshape(-1)
+            rl_active = info.get("rl_active", True)  # default True = backward compat
+
+            # Store transition: only when RL is active (or switch mode disabled).
+            # 终止 chunk (done=True) 也存入，它携带 reward 信号；
+            # done 之后的 chunk 由 `if done: break` 阻止，不会进入。
             if store_transitions:
-                # Build next RL state (requires VLA forward pass)
-                next_x, _ = self._extract_rl_state(next_obs)
-
-                self.replay_buffer.add(
-                    x=x,
-                    a=a_flat,
-                    a_tilde=a_tilde_flat,
-                    rewards=rewards,
-                    next_x=next_x,
-                    done=float(done),
-                )
+                skip_store = self.critical_phase_only and not rl_active
+                if not skip_store:
+                    if skip_remaining > 0:
+                        skip_remaining -= 1
+                    else:
+                        next_x, _ = self._extract_rl_state(next_obs)
+                        self.replay_buffer.add(
+                            x=x, a=a_flat, a_tilde=a_tilde_flat,
+                            rewards=rewards, next_x=next_x, done=float(done),
+                        )
 
             # Update stats
             stats.total_reward += float(rewards.sum())
             stats.num_chunks += 1
-            # Use env-reported steps if available, else fall back to chunk_length
             stats.num_steps += info.get("steps_executed", self.chunk_length)
 
             if done:

@@ -1,24 +1,9 @@
-"""High-level wrapper for VLA inference, embedding extraction, and joint training.
-
-Loads a PI0/PI0.5 model from checkpoint, wraps it for RL Token usage,
-and exposes the interface used by the rollout worker and trainers.
-
-Builds the same input/output transform chains as OpenPI's
-``create_trained_policy`` so that normalisation, camera layout, and
-action slicing are fully config-driven.
-
-Uses ``PI0Pytorch.extract_prefix_embeddings()`` and
-``PI0Pytorch.forward_with_prefix_embeddings()`` — first-class APIs added
-to PI0Pytorch — instead of the old monkey-patching ``EmbeddingExtractor``.
-
-NOTE: The transform chain construction in ``__init__`` duplicates logic from
-``policy_config.create_trained_policy()``.  Future refactoring should make
-VLAWrapper reuse ``create_trained_policy`` directly.
-"""
+"""VLA wrapper for RL Token training — loads model via ``create_trained_policy`` (same as serve_policy)."""
 
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 from typing import Any
 
@@ -26,6 +11,7 @@ import jax
 import numpy as np
 import torch
 from openpi.models.model import Observation
+from openpi.policies import policy_config as _policy_config
 from openpi.training import checkpoints as _checkpoints
 from openpi.training.config import get_config
 from openpi.transforms import InjectDefaultPrompt, Normalize, Unnormalize, compose
@@ -36,40 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class VLAWrapper:
-    """Loads and wraps a VLA model for use by RLT components.
+    """VLA model wrapper used by RL rollout workers and trainers.
 
-    Provides:
-    - preprocess_obs: raw env obs → batched Observation
-    - extract_embeddings: get post-transformer prefix embeddings z_{1:M}
-    - sample_reference_actions: get full VLA action trajectory (H steps)
-    - get_rl_chunk_reference: slice first C steps as RL reference actions
-    - compute_vla_loss: VLA flow-matching loss (standalone)
-    - compute_vla_loss_with_embeddings: single forward for joint training
-
-    The input/output transform chains mirror OpenPI's
-    ``create_trained_policy`` (``policy_config.py``):
-
-    **Input** (applied by :meth:`preprocess_obs`)::
-
-        data_transforms.inputs  (e.g. DroidInputs)
-        → Normalize
-        → model_transforms.inputs  (ResizeImages, TokenizePrompt, Pad)
-
-    **Output** (applied by :meth:`sample_reference_actions`)::
-
-        model_transforms.outputs
-        → Unnormalize
-        → data_transforms.outputs  (e.g. DroidOutputs)
-
-    Args:
-        checkpoint_path: Path to model.safetensors weight file.
-        config_name: Registered openpi config name (e.g. "pi05_droid_finetune").
-        device: Torch device for the model.
-        data_transforms: Optional override for the config's default
-            ``data_transforms``.  Must match whatever was used during
-            training (e.g. ``ThreeCameraDroidInputs`` for 3-camera setups).
-        default_prompt: If set, injected into inputs that lack a ``prompt``
-            key (mirrors OpenPI's ``InjectDefaultPrompt``).
+    Model loading and transform chains match serve_policy exactly
+    (``create_trained_policy``, bfloat16, eval mode).
     """
 
     def __init__(
@@ -83,48 +39,58 @@ class VLAWrapper:
         self.device = torch.device(device)
         self.train_config = get_config(config_name)
 
-        self.pi0 = self.train_config.model.load_pytorch(
-            self.train_config,
-            checkpoint_path,
-        )
-        self.pi0 = self.pi0.to(self.device)
+        # Determine checkpoint directory (handle both file and dir paths)
+        if os.path.isdir(checkpoint_path):
+            checkpoint_dir = pathlib.Path(checkpoint_path)
+        else:
+            checkpoint_dir = pathlib.Path(checkpoint_path).parent
 
-        self.action_dim = self.train_config.model.action_dim
-        self.action_horizon = self.train_config.model.action_horizon
-
-        checkpoint_dir = pathlib.Path(checkpoint_path).parent
         data_config = self.train_config.data.create(
             self.train_config.assets_dirs, self.train_config.model
         )
-        use_q = data_config.use_quantile_norm
 
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = self._load_norm_stats(checkpoint_dir, data_config)
 
-        dt = data_transforms or data_config.data_transforms
+        # Reuse serve_policy's loading path (includes bfloat16 + eval())
+        self._policy = _policy_config.create_trained_policy(
+            self.train_config,
+            checkpoint_path,
+            default_prompt=default_prompt,
+            norm_stats=norm_stats,
+            pytorch_device=str(self.device),
+        )
 
-        self._input_transform = compose([
-            *dt.inputs,
-            InjectDefaultPrompt(default_prompt),
-            Normalize(norm_stats, use_quantiles=use_q),
-            *data_config.model_transforms.inputs,
-        ])
-        self._output_transform = compose([
-            *data_config.model_transforms.outputs,
-            Unnormalize(norm_stats, use_quantiles=use_q),
-            *dt.outputs,
-        ])
+        # Extract internals from the Policy object
+        self.pi0 = self._policy._model
+        self._input_transform = self._policy._input_transform
+        self._output_transform = self._policy._output_transform
+        self._sample_actions = self._policy._sample_actions
+
+        self.action_dim = self.train_config.model.action_dim
+        self.action_horizon = self.train_config.model.action_horizon
+
+        # Optional: custom data_transforms override (used by train_rl_token.py)
+        if data_transforms is not None:
+            use_q = data_config.use_quantile_norm
+            self._input_transform = compose([
+                *data_config.repack_transforms.inputs,
+                InjectDefaultPrompt(default_prompt),
+                *data_transforms.inputs,
+                Normalize(norm_stats, use_quantiles=use_q),
+                *data_config.model_transforms.inputs,
+            ])
+            self._output_transform = compose([
+                *data_config.model_transforms.outputs,
+                Unnormalize(norm_stats, use_quantiles=use_q),
+                *data_transforms.outputs,
+                *data_config.repack_transforms.outputs,
+            ])
 
     @staticmethod
     def _load_norm_stats(checkpoint_dir: pathlib.Path, data_config) -> dict[str, _transforms.NormStats]:
-        """Load norm stats, preferring checkpoint-embedded assets over config assets.
-
-        Mirrors OpenPI's ``create_trained_policy`` which loads from
-        ``checkpoint_dir/assets/<asset_id>/`` to guarantee the stats match
-        training.  Falls back to the config's ``norm_stats`` for checkpoints
-        that don't bundle assets (e.g. rlt-openpi ``.pt`` checkpoints).
-        """
+        """Load norm stats from checkpoint/assets/, falling back to config norm_stats."""
         asset_id = data_config.asset_id
         try:
             norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", asset_id)
@@ -143,19 +109,7 @@ class VLAWrapper:
         )
 
     def preprocess_obs(self, obs: dict[str, Any]) -> Observation:
-        """Convert a raw environment observation into a batched Observation.
-
-        Applies the full OpenPI input transform chain
-        (DroidInputs → Normalize → ResizeImages → TokenizePrompt →
-        PadStatesAndActions).
-
-        Expects ``obs`` in DROID-schema keys as produced by the env
-        factory (e.g. ``observation/joint_position``,
-        ``observation/exterior_image_1_left``, ``prompt``).
-
-        Args:
-            obs: Raw observation dict from the environment.
-        """
+        """Apply input transforms to raw obs → batched Observation."""
         transformed = self._input_transform(dict(obs))
 
         batched = jax.tree.map(
@@ -168,59 +122,37 @@ class VLAWrapper:
         self,
         observation: Observation,
     ) -> tuple[Tensor, Tensor]:
-        """Extract post-transformer prefix embeddings from the frozen VLA.
-
-        Uses ``PI0Pytorch.extract_prefix_embeddings()`` — a first-class
-        API (no monkey-patching).
-
-        Returns:
-            z: [B, M, embedding_dim] post-transformer prefix embeddings.
-            pad_mask: [B, M] boolean mask (True = valid token).
-        """
+        """Extract post-transformer prefix embeddings z and pad_mask."""
         return self.pi0.extract_prefix_embeddings(observation)
 
     def sample_reference_actions(
         self,
         observation: Observation,
     ) -> Tensor:
-        """Get full VLA reference action trajectory, unnormalized to robot space.
+        """Run VLA inference → unnormalize → [B, H, action_dim] robot-space actions.
 
-        Mirrors OpenPI's ``Policy.infer`` output path: passes both
-        ``state`` and ``actions`` through the output transform so that
-        ``Unnormalize`` can operate on the full norm_stats.
-
-        Returns:
-            actions: [B, H, robot_action_dim] where H = action_horizon.
+        Matches ``Policy.infer()`` exactly: model inference → remove batch dim
+        → output_transform once.
         """
         raw = self.pi0.sample_actions(self.device, observation)
-        actions_np = raw.cpu().numpy()
-        state_np = observation.state.cpu().numpy()
 
-        out = []
-        for i in range(actions_np.shape[0]):
-            t = self._output_transform({
-                "state": state_np[i],
-                "actions": actions_np[i],
-            })
-            out.append(t["actions"])
-        return torch.as_tensor(np.stack(out), device=self.device)
+        # Match Policy.infer(): remove batch dim → output_transform once.
+        # Policy.infer() does: jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
+        outputs = {
+            "state": observation.state[0].detach().cpu().numpy(),
+            "actions": raw[0].detach().cpu().numpy(),
+        }
+        outputs = self._output_transform(outputs)
+
+        # Re-batch to [1, H, action_dim] for callers expecting batched output.
+        return torch.as_tensor(outputs["actions"][None, ...], device=self.device)
 
     def get_rl_chunk_reference(
         self,
         observation: Observation,
         chunk_length: int = 10,
     ) -> Tensor:
-        """Get the first C action steps from the VLA as the RL reference.
-
-        The RL actor conditions on these reference actions (a_tilde_{1:C}).
-
-        Args:
-            observation: Batched openpi Observation.
-            chunk_length: Number of action steps to slice (C, default 10).
-
-        Returns:
-            a_tilde: [B, C, action_dim] reference actions for the RL chunk.
-        """
+        """Slice first C steps from VLA inference as RL reference a_tilde [B, C, action_dim]."""
         full_actions = self.sample_reference_actions(observation)
         return full_actions[:, :chunk_length, :]
 
@@ -229,19 +161,7 @@ class VLAWrapper:
         observation: dict[str, Any] | Observation,
         actions: Tensor,
     ) -> Tensor:
-        """Compute the VLA's flow-matching training loss on demo data.
-
-        Calls PI0Pytorch.forward() which computes the denoising loss:
-        noisy actions x_t are created from ground-truth actions + noise,
-        the model predicts the velocity field v_t, and loss = MSE(u_t, v_t).
-
-        Args:
-            observation: Batched observation (dict or openpi Observation).
-            actions: Ground-truth demo actions [B, H, action_dim].
-
-        Returns:
-            Scalar mean VLA loss.
-        """
+        """Flow-matching denoising loss on demo data [B, H, action_dim] → scalar."""
         per_element_loss = self.pi0.forward(observation, actions)
         return per_element_loss.mean()
 
@@ -250,21 +170,7 @@ class VLAWrapper:
         observation: Observation,
         actions: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """Single VLA forward pass returning both embeddings and loss.
-
-        Uses ``PI0Pytorch.forward_with_prefix_embeddings()`` — a
-        first-class API that returns prefix embeddings alongside the
-        flow-matching loss in a single forward pass (no monkey-patching).
-
-        Args:
-            observation: Batched openpi Observation.
-            actions: Ground-truth demo actions [B, H, action_dim].
-
-        Returns:
-            z: Detached prefix embeddings [B, M, D] (stop-grad from VLA).
-            pad_mask: Boolean mask [B, M] (True = valid token).
-            vla_loss: Scalar VLA flow-matching loss (with grad for VLA).
-        """
+        """Single forward: returns (z, pad_mask, vla_loss) for joint training."""
         per_element_loss, z, pad_mask = self.pi0.forward_with_prefix_embeddings(
             observation, actions
         )

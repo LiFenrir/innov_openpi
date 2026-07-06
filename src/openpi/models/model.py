@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import dataclasses
 import enum
 import logging
+import os
 import pathlib
 from typing import Generic, TypeVar
 
@@ -243,7 +244,13 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
-        safetensors.torch.load_model(model, weight_path)
+        # If weight_path is a directory, look for model.safetensors inside it
+        weight_file = weight_path
+        if os.path.isdir(weight_path):
+            candidate = os.path.join(weight_path, "model.safetensors")
+            if os.path.isfile(candidate):
+                weight_file = candidate
+        safetensors.torch.load_model(model, weight_file)
         return model
 
     @abc.abstractmethod

@@ -21,21 +21,24 @@ happens on rank 0, and the progress bar is suppressed on non-zero ranks.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+import datetime as dt
 import logging
+import math
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import torch
-import torch.distributed as dist
 from torch import Tensor
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
 from openpi.models.model import Observation
+from openpi.training.vla_wrapper import VLAWrapper
 from rlt.models.rl_token import RLTokenModel
 from rlt.training.config import RLTokenTrainConfig
 from rlt.training.ddp_utils import is_main_process
-from openpi.training.vla_wrapper import VLAWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +85,11 @@ class RLTokenTrainer:
         # forward() redirects gradients back to them automatically).
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.learning_rate,
+            lr=config.peak_lr,
             weight_decay=config.weight_decay,
         )
-        self.scheduler = self._build_scheduler(self.optimizer)
+        # LR is set per-step via _compute_lr(), matching OpenPI's train_pytorch.py pattern.
+        # No torch.optim.lr_scheduler is used.
 
         # Wrap with DDP after optimizer creation
         if use_ddp:
@@ -99,7 +103,6 @@ class RLTokenTrainer:
         # VLA joint training state (created by _setup_joint_training)
         self._vla: VLAWrapper | None = None
         self.vla_optimizer: torch.optim.Optimizer | None = None
-        self.vla_scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
 
         self._global_step = 0
 
@@ -168,25 +171,32 @@ class RLTokenTrainer:
                     self.config.num_train_steps,
                     alpha,
                 )
-        else:
-            if main:
-                logger.info(
-                    "Starting Stage 1 frozen-VLA training for %d steps",
-                    self.config.num_train_steps,
-                )
+        elif main:
+            logger.info(
+                "Starting Stage 1 frozen-VLA training for %d steps",
+                self.config.num_train_steps,
+            )
+
+        if main:
+            logger.info(
+                "LR schedule: warmup=%d, peak_lr=%.2e, decay_steps=%d, decay_lr=%.2e",
+                self.config.warmup_steps,
+                self.config.peak_lr,
+                self.config.decay_steps,
+                self.config.decay_lr,
+            )
 
         if self.config.resume_checkpoint:
             self.load(self.config.resume_checkpoint)
             if main:
                 logger.info("Resumed from step %d", self._global_step)
 
-        # Only show progress bar on rank 0
-        pbar = (
-            tqdm(range(1, self.config.num_train_steps + 1), desc="Stage 1", disable=not main)
-            if main
-            else None
-        )
-        for step_idx in tqdm(range(1, self.config.num_train_steps + 1), desc="Stage 1", disable=not main):
+        # Only show progress bar on rank 0 (single tqdm instance shared by loop + set_postfix)
+        if main:
+            pbar = tqdm(range(1, self.config.num_train_steps + 1), desc="Stage 1")
+        else:
+            pbar = None
+        for step_idx in (pbar if pbar is not None else range(1, self.config.num_train_steps + 1)):
             # Set epoch for DistributedSampler shuffling
             if self.use_ddp and hasattr(dataloader, "sampler"):
                 sampler = dataloader.sampler
@@ -201,12 +211,37 @@ class RLTokenTrainer:
 
             metrics = self.step(vla, observations, actions)
 
+            if (step_idx == 1 or step_idx % self.config.print_every == 0) and main:
+                ts = dt.datetime.now(tz=dt.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+                if self.joint:
+                    msg = (
+                        f"{ts} [rlt.training.rl_token_trainer] INFO "
+                        f"step={metrics['step']} loss={metrics['loss']:.6f} "
+                        f"l_ro={metrics['l_ro']:.6f} l_vla={metrics['l_vla']:.6f} "
+                        f"grad_norm={metrics['grad_norm']:.6f} vla_grad={metrics['vla_grad_norm']:.6f} "
+                        f"lr={metrics['lr']:.2e}"
+                    )
+                else:
+                    msg = (
+                        f"{ts} [rlt.training.rl_token_trainer] INFO "
+                        f"step={metrics['step']} loss={metrics['loss']:.6f} "
+                        f"grad_norm={metrics['grad_norm']:.6f} lr={metrics['lr']:.2e}"
+                    )
+                if pbar is not None:
+                    tqdm.write(msg)
+                else:
+                    logger.info(msg)
+
             # Progress bar (rank 0 only)
             if pbar is not None:
                 if self.joint:
-                    pbar.set_postfix(l_ro=f"{metrics['l_ro']:.4f}", l_vla=f"{metrics['l_vla']:.4f}")
+                    pbar.set_postfix(
+                        l_ro=f"{metrics['l_ro']:.4f}",
+                        l_vla=f"{metrics['l_vla']:.4f}",
+                        lr=f"{metrics['lr']:.2e}",
+                    )
                 else:
-                    pbar.set_postfix(loss=f"{metrics['loss']:.4f}")
+                    pbar.set_postfix(loss=f"{metrics['loss']:.4f}", lr=f"{metrics['lr']:.2e}")
 
             # wandb logging (every log_every steps, rank 0 only)
             if step_idx % self.config.log_every == 0 and log_fn is not None and main:
@@ -217,6 +252,7 @@ class RLTokenTrainer:
 
         if self._global_step % self.config.save_every != 0:
             self.save()
+
         if main:
             logger.info("Stage 1 training complete (%d steps)", self._global_step)
 
@@ -248,7 +284,6 @@ class RLTokenTrainer:
         state = {
             "model": self._unwrap_model().state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
             "step": self._global_step,
             "config": self.config,
         }
@@ -256,8 +291,6 @@ class RLTokenTrainer:
             state["vla_model"] = self._vla.pi0.state_dict()
         if self.vla_optimizer is not None:
             state["vla_optimizer"] = self.vla_optimizer.state_dict()
-        if self.vla_scheduler is not None:
-            state["vla_scheduler"] = self.vla_scheduler.state_dict()
         torch.save(state, ckpt_path)
         logger.info("Saved checkpoint to %s", ckpt_path)
 
@@ -278,32 +311,44 @@ class RLTokenTrainer:
         ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
         self._unwrap_model().load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
-        if "scheduler" in ckpt:
-            self.scheduler.load_state_dict(ckpt["scheduler"])
         self._global_step = ckpt["step"]
         if "vla_model" in ckpt and self._vla is not None:
             self._vla.pi0.load_state_dict(ckpt["vla_model"])
             logger.info("Restored fine-tuned VLA weights from checkpoint")
         if "vla_optimizer" in ckpt and self.vla_optimizer is not None:
             self.vla_optimizer.load_state_dict(ckpt["vla_optimizer"])
-        if "vla_scheduler" in ckpt and self.vla_scheduler is not None:
-            self.vla_scheduler.load_state_dict(ckpt["vla_scheduler"])
         logger.info("Loaded checkpoint from %s (step %d)", ckpt_path, self._global_step)
 
     # ------------------------------------------------------------------
     # Private: mode-specific steps
     # ------------------------------------------------------------------
 
-    def _build_scheduler(
-        self, optimizer: torch.optim.Optimizer
-    ) -> torch.optim.lr_scheduler.LRScheduler:
-        """Build a linear warmup → constant LR scheduler."""
-        warmup = self.config.warmup_steps
-        if warmup <= 0:
-            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
-        return torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup
-        )
+    def _compute_lr(self, step: int, *, peak_lr: float | None = None, decay_lr: float | None = None) -> float:
+        """Compute learning rate for a given step (warmup → cosine decay).
+
+        Matches OpenPI's ``train_pytorch.py`` lr_schedule exactly:
+        - Warmup: linear from ``peak_lr / (warmup_steps + 1)`` to ``peak_lr``.
+        - Decay: cosine from ``peak_lr`` to ``decay_lr``.
+
+        Args:
+            step: Current global step (0-indexed).
+            peak_lr: Override peak learning rate. Defaults to ``config.peak_lr``.
+            decay_lr: Override end learning rate. Defaults to ``config.decay_lr``.
+        """
+        warmup_steps = self.config.warmup_steps
+        _peak_lr = peak_lr if peak_lr is not None else self.config.peak_lr
+        _decay_lr = decay_lr if decay_lr is not None else self.config.decay_lr
+        decay_steps = self.config.decay_steps
+
+        if step < warmup_steps:
+            # Match JAX behavior: start from peak_lr / (warmup_steps + 1)
+            init_lr = _peak_lr / (warmup_steps + 1)
+            return init_lr + (_peak_lr - init_lr) * step / warmup_steps
+
+        # Cosine decay
+        progress = min(1.0, (step - warmup_steps) / max(1, decay_steps - warmup_steps))
+        cos = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return _decay_lr + (_peak_lr - _decay_lr) * cos
 
     def _setup_joint_training(self, vla: VLAWrapper) -> None:
         """Unfreeze VLA and create its optimizer (called once by train())."""
@@ -320,7 +365,7 @@ class RLTokenTrainer:
             lr=self.config.vla_learning_rate,
             weight_decay=self.config.weight_decay,
         )
-        self.vla_scheduler = self._build_scheduler(self.vla_optimizer)
+        # VLA LR is set per-step via _compute_lr(), same as the RL token optimizer.
 
     def _step_frozen(
         self,
@@ -329,6 +374,11 @@ class RLTokenTrainer:
     ) -> dict[str, float]:
         """Frozen VLA step: extract embeddings (no grad) → L_ro only."""
         self.model.train()
+
+        # Set LR for this step (matching OpenPI's train_pytorch.py pattern)
+        lr = self._compute_lr(self._global_step)
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
 
         observations = _obs_to_device(observations, self.device)
         with torch.no_grad():
@@ -344,10 +394,9 @@ class RLTokenTrainer:
             self._unwrap_model().parameters(), max_norm=self.config.max_grad_norm
         )
         self.optimizer.step()
-        self.scheduler.step()
 
         self._global_step += 1
-        return {"loss": loss.item(), "grad_norm": grad_norm.item(), "lr": self.optimizer.param_groups[0]["lr"], "step": self._global_step}
+        return {"loss": loss.item(), "grad_norm": grad_norm.item(), "lr": lr, "step": self._global_step}
 
     def _step_joint(
         self,
@@ -358,6 +407,15 @@ class RLTokenTrainer:
         """Joint step: single VLA forward → L_ro + alpha * L_vla."""
         alpha = self.config.vla_finetune_alpha
         self.model.train()
+
+        # Set LR for this step (matching OpenPI's train_pytorch.py pattern)
+        lr = self._compute_lr(self._global_step)
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
+        if self.vla_optimizer is not None:
+            vla_lr = self._compute_lr(self._global_step, peak_lr=self.config.vla_learning_rate)
+            for pg in self.vla_optimizer.param_groups:
+                pg["lr"] = vla_lr
 
         observations = _obs_to_device(observations, self.device)
         actions = actions.to(self.device)
@@ -383,7 +441,6 @@ class RLTokenTrainer:
             self._unwrap_model().parameters(), max_norm=self.config.max_grad_norm
         )
         self.optimizer.step()
-        self.scheduler.step()
         if self.vla_optimizer is not None:
             vla_grad_norm = torch.nn.utils.clip_grad_norm_(
                 self._vla.trainable_parameters(), max_norm=self.config.max_grad_norm
@@ -391,8 +448,6 @@ class RLTokenTrainer:
             self.vla_optimizer.step()
         else:
             vla_grad_norm = torch.tensor(0.0)
-        if self.vla_scheduler is not None:
-            self.vla_scheduler.step()
 
         self._global_step += 1
         return {
@@ -401,7 +456,7 @@ class RLTokenTrainer:
             "l_vla": l_vla.item(),
             "grad_norm": grad_norm.item(),
             "vla_grad_norm": vla_grad_norm.item(),
-            "lr": self.optimizer.param_groups[0]["lr"],
+            "lr": lr,
             "step": self._global_step,
         }
 
