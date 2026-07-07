@@ -82,10 +82,11 @@ def make_att_2d_masks(pad_masks, att_masks):
 
 
 class PI0Pytorch(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, rtc_processor=None):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.rtc_processor = rtc_processor
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -109,7 +110,9 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
-        if config.pytorch_compile_mode is not None:
+        # torch.compile is incompatible with RTC (dynamic control flow in
+        # sample_actions).  Skip compilation when RTC may be active.
+        if config.pytorch_compile_mode is not None and not self._rtc_enabled():
             self.sample_actions = torch.compile(self.sample_actions, mode=config.pytorch_compile_mode)
 
         # Initialize gradient checkpointing flag
@@ -145,6 +148,15 @@ class PI0Pytorch(nn.Module):
     def is_gradient_checkpointing_enabled(self):
         """Check if gradient checkpointing is enabled."""
         return self.gradient_checkpointing_enabled
+
+    def _rtc_enabled(self) -> bool:
+        """Check if RTC guidance is active (requires both a processor and
+        config.enabled=True).  Training operates independently of this flag."""
+        return (
+            self.rtc_processor is not None
+            and getattr(self.config, "rtc_config", None) is not None
+            and self.config.rtc_config.enabled
+        )
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -374,8 +386,12 @@ class PI0Pytorch(nn.Module):
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+    def sample_actions(self, device, observation, noise=None, num_steps=10, **kwargs) -> Tensor:
+        """Do a full inference forward and compute the action.
+
+        Extra kwargs are forwarded as RTC parameters:
+            prev_chunk_left_over, inference_delay, execution_horizon
+        """
         bsize = observation.state.shape[0]
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
@@ -406,13 +422,36 @@ class PI0Pytorch(nn.Module):
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-            )
+
+            # Build a closure over the current denoiser — needed by
+            # RTCProcessor which expects  callable(x_t) → v_t.
+            def denoise_step_partial_call(input_x_t, current_timestep=expanded_time):
+                return self.denoise_step(
+                    state,
+                    prefix_pad_masks,
+                    past_key_values,
+                    input_x_t,
+                    current_timestep,
+                )
+
+            if self._rtc_enabled():
+                inference_delay = kwargs.get("inference_delay")
+                prev_chunk_left_over = kwargs.get("prev_chunk_left_over")
+                execution_horizon = kwargs.get("execution_horizon")
+                v_t = self.rtc_processor.denoise_step(
+                    x_t=x_t,
+                    prev_chunk_left_over=prev_chunk_left_over,
+                    inference_delay=inference_delay,
+                    time=time,
+                    original_denoise_step_partial=denoise_step_partial_call,
+                    execution_horizon=execution_horizon,
+                )
+            else:
+                v_t = denoise_step_partial_call(x_t)
+
+            # Optional debug tracking
+            if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
+                self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t

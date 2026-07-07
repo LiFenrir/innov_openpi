@@ -48,6 +48,15 @@ class Args:
     # Number of action steps to return per inference. Defaults to model's full action_horizon.
     action_chunk: int | None = None
 
+    # Enable Real-Time Chunking (RTC) for temporal action smoothing.
+    # When enabled, the server expects clients to send prev_chunk_left_over /
+    # inference_delay / execution_horizon in the RTC protocol envelope.
+    rtc: bool = False
+
+    # RTC execution horizon — how many steps of the previous chunk's tail to target
+    # with the guidance correction (default: 10).
+    rtc_execution_horizon: int = 10
+
     # Record the policy's behavior for debugging.
     record: bool = False
 
@@ -61,6 +70,19 @@ def main(args: Args) -> None:
 
     train_config = _config.load_config(args.config)
     logging.info("Creating policy: config=%s, checkpoint=%s", args.config, args.dir)
+
+    # --- RTC 配置注入 ---
+    if args.rtc:
+        from openpi.policies.rtc.configuration_rtc import RTCConfig
+
+        rtc_config = RTCConfig(
+            enabled=True,
+            execution_horizon=args.rtc_execution_horizon,
+        )
+        train_config.model.rtc_config = rtc_config
+        logging.info(
+            "RTC enabled: execution_horizon=%d", args.rtc_execution_horizon,
+        )
 
     policy = _policy_config.create_trained_policy(
         train_config, args.dir, default_prompt=args.default_prompt, action_chunk=args.action_chunk

@@ -34,6 +34,9 @@ class Pi0Config(_model.BaseModelConfig):
 
     pytorch_compile_mode: str | None = "max-autotune"
 
+    # Real-Time Chunking (RTC) configuration — inference-only.
+    rtc_config: Any | None = None  # RTCConfig | None (lazy import to avoid circular deps)
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
