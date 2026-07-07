@@ -34,10 +34,10 @@ class LatencyTracker:
     def __len__(self) -> int:
         return len(self._values)
 
-    def max(self) -> float | None:
+    def max(self) -> float:
         return self.max_latency
 
-    def percentile(self, q: float) -> float | None:
+    def percentile(self, q: float) -> float:
         if not self._values:
             return 0.0
         q = float(q)

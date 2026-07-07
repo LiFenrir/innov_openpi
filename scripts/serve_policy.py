@@ -25,6 +25,7 @@ import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.policies.rtc.configuration_rtc import RTCConfig
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -73,8 +74,6 @@ def main(args: Args) -> None:
 
     # --- RTC 配置注入 ---
     if args.rtc:
-        from openpi.policies.rtc.configuration_rtc import RTCConfig
-
         rtc_config = RTCConfig(
             enabled=True,
             execution_horizon=args.rtc_execution_horizon,

@@ -1,3 +1,4 @@
+import functools
 import logging
 import math
 
@@ -5,6 +6,7 @@ import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
+from transformers.models.siglip import check as _siglip_check
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
@@ -119,13 +121,8 @@ class PI0Pytorch(nn.Module):
         self.gradient_checkpointing_enabled = False
 
         msg = "transformers_replace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`."
-        try:
-            from transformers.models.siglip import check
-
-            if not check.check_whether_transformers_replace_is_installed_correctly():
-                raise ValueError(msg)
-        except ImportError:
-            raise ValueError(msg) from None
+        if not _siglip_check.check_whether_transformers_replace_is_installed_correctly():
+            raise ValueError(msg)
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
@@ -152,11 +149,14 @@ class PI0Pytorch(nn.Module):
     def _rtc_enabled(self) -> bool:
         """Check if RTC guidance is active (requires both a processor and
         config.enabled=True).  Training operates independently of this flag."""
-        return (
-            self.rtc_processor is not None
-            and getattr(self.config, "rtc_config", None) is not None
-            and self.config.rtc_config.enabled
-        )
+        if self.rtc_processor is None:
+            return False
+        rtc_config = getattr(self.config, "rtc_config", None)
+        if rtc_config is None:
+            return False
+        if isinstance(rtc_config, dict):
+            return rtc_config.get("enabled", False)
+        return rtc_config.enabled
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -420,34 +420,24 @@ class PI0Pytorch(nn.Module):
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        # Bind constant args once, timestep is rebound per iteration via partial
+        _denoise_step = functools.partial(
+            self.denoise_step, state, prefix_pad_masks, past_key_values
+        )
         while time >= -dt / 2:
-            expanded_time = time.expand(bsize)
-
-            # Build a closure over the current denoiser — needed by
-            # RTCProcessor which expects  callable(x_t) → v_t.
-            def denoise_step_partial_call(input_x_t, current_timestep=expanded_time):
-                return self.denoise_step(
-                    state,
-                    prefix_pad_masks,
-                    past_key_values,
-                    input_x_t,
-                    current_timestep,
-                )
+            denoiser = functools.partial(_denoise_step, timestep=time.expand(bsize))
 
             if self._rtc_enabled():
-                inference_delay = kwargs.get("inference_delay")
-                prev_chunk_left_over = kwargs.get("prev_chunk_left_over")
-                execution_horizon = kwargs.get("execution_horizon")
                 v_t = self.rtc_processor.denoise_step(
                     x_t=x_t,
-                    prev_chunk_left_over=prev_chunk_left_over,
-                    inference_delay=inference_delay,
+                    prev_chunk_left_over=kwargs.get("prev_chunk_left_over"),
+                    inference_delay=kwargs.get("inference_delay"),
                     time=time,
-                    original_denoise_step_partial=denoise_step_partial_call,
-                    execution_horizon=execution_horizon,
+                    original_denoise_step_partial=denoiser,
+                    execution_horizon=kwargs.get("execution_horizon"),
                 )
             else:
-                v_t = denoise_step_partial_call(x_t)
+                v_t = denoiser(x_t)
 
             # Optional debug tracking
             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():

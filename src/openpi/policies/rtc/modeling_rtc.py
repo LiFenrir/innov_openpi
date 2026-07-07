@@ -112,7 +112,6 @@ class RTCProcessor:
         if prev_chunk_left_over is None:
             return original_denoise_step_partial(x_t)
 
-        x_t = x_t.clone().detach()
         squeezed = False
         if x_t.ndim < 3:
             x_t = x_t.unsqueeze(0)
@@ -127,17 +126,13 @@ class RTCProcessor:
 
         B, T, A = x_t.shape
 
-        # Pad prefix to match x_t shape if needed
-        if prev_chunk_left_over.shape[1] < T or prev_chunk_left_over.shape[2] < A:
-            padded = torch.zeros(B, T, A, device=x_t.device)
-            pT = prev_chunk_left_over.shape[1]
-            pA = prev_chunk_left_over.shape[2]
-            padded[:, :pT, :pA] = prev_chunk_left_over
-            prev_chunk_left_over = padded
-
-        assert prev_chunk_left_over.shape == x_t.shape, (
-            "Padded prefix must match x_t shape"
-        )
+        # Align prev_chunk_left_over shape to x_t: pad if smaller, truncate if larger
+        pT, pA = prev_chunk_left_over.shape[1], prev_chunk_left_over.shape[2]
+        if pT != T or pA != A:
+            aligned = torch.zeros(B, T, A, device=x_t.device)
+            copy_T, copy_A = min(pT, T), min(pA, A)
+            aligned[:, :copy_T, :copy_A] = prev_chunk_left_over[:, :copy_T, :copy_A]
+            prev_chunk_left_over = aligned
 
         weights = (
             self.get_prefix_weights(inference_delay, execution_horizon, T)
@@ -146,15 +141,10 @@ class RTCProcessor:
             .unsqueeze(-1)
         )
 
-        with torch.enable_grad():
-            v_t = original_denoise_step_partial(x_t)
-            x_t.requires_grad_(True)
-            x1_t = x_t - time * v_t  # denoised prediction
-            err = (prev_chunk_left_over - x1_t) * weights
-            grad_outputs = err.clone().detach()
-            correction = torch.autograd.grad(
-                x1_t, x_t, grad_outputs, retain_graph=False
-            )[0]
+        v_t = original_denoise_step_partial(x_t)
+        x1_t = x_t - time * v_t  # denoised prediction (v_t detached, so ∂x1_t/∂x_t = I)
+        err = (prev_chunk_left_over - x1_t) * weights
+        correction = err  # gradient is identity since v_t has no grad graph
 
         max_guidance_weight = torch.as_tensor(self.rtc_config.max_guidance_weight)
         tau_tensor = torch.as_tensor(tau)
@@ -190,7 +180,9 @@ class RTCProcessor:
     # ------------------------------------------------------------------
 
     def get_prefix_weights(self, start, end, total):
-        start = min(start, end)
+        if start > end:
+            logger.warning("get_prefix_weights: start=%d > end=%d, clamping start to end", start, end)
+            start = end
         schedule = self.rtc_config.prefix_attention_schedule
 
         if schedule == RTCAttentionSchedule.ZEROS:

@@ -122,5 +122,5 @@ class ActionQueue:
                 logger.warning(
                     "Delay mismatch: index_diff=%d real_delay=%d", diff, real_delay
                 )
-                return real_delay
+                return effective
         return effective

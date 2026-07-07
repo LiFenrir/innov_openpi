@@ -4,9 +4,12 @@ import pathlib
 from typing import Any
 
 import jax.numpy as jnp
+import torch
 
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
+import openpi.policies.rtc.configuration_rtc as _rtc_config
+import openpi.policies.rtc.modeling_rtc as _rtc_modeling
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
@@ -60,9 +63,11 @@ def create_trained_policy(
         # Initialize RTC processor if configured
         rtc_config = getattr(train_config.model, "rtc_config", None)
         if rtc_config is not None:
-            from openpi.policies.rtc.modeling_rtc import RTCProcessor
-
-            rtc_processor = RTCProcessor(rtc_config)
+            # YAML 加载的 rtc_config 是 dict，手动转为 RTCConfig
+            if isinstance(rtc_config, dict):
+                rtc_config = _rtc_config.RTCConfig(**rtc_config)
+                object.__setattr__(train_config.model, "rtc_config", rtc_config)
+            rtc_processor = _rtc_modeling.RTCProcessor(rtc_config)
             model.rtc_processor = rtc_processor
             logging.info("RTC processor initialized (enabled=%s)", rtc_config.enabled)
     else:
@@ -77,12 +82,7 @@ def create_trained_policy(
 
     # Determine the device to use for PyTorch models
     if is_pytorch and pytorch_device is None:
-        try:
-            import torch
-
-            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            pytorch_device = "cpu"
+        pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
     return _policy.Policy(
         model,

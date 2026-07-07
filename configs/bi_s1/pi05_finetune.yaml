@@ -31,7 +31,7 @@ model:
   _target_: Pi0Config
   pi05: true
   action_dim: 32
-  action_horizon: 16
+  action_horizon: 50
   max_token_len: 250
   paligemma_variant: gemma_2b
   action_expert_variant: gemma_300m
@@ -39,11 +39,11 @@ model:
 # ── Data ────────────────────────────────────────────────
 data:
   _target_: LeRobotDataConfig
-  repo_id: /home/kemove/VLA/datasets/bi_s1/bi_s1_0624
+  repo_id: /home/kemove/VLA/datasets/bi_s1/bi_s1_0706_stacked
   robot_type: bi_s1
   default_prompt: "Grasp a single layer of the cloth with the gripper, then place the cloth onto the board"
   assets:
-    asset_id: bi_s1
+    asset_id: bi_s1_0706_stacked
   camera_map:
     front: base_0_rgb
     left_wrist: left_wrist_0_rgb

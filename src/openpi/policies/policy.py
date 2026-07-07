@@ -58,6 +58,13 @@ class Policy(BasePolicy):
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
         self._action_chunk = action_chunk
+        if action_chunk is not None and action_chunk > model.config.action_horizon:
+            logging.warning(
+                "action_chunk=%d > model.action_horizon=%d, action_chunk 只能截短不能延长，已忽略",
+                action_chunk,
+                model.config.action_horizon,
+            )
+            self._action_chunk = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -93,8 +100,13 @@ class Policy(BasePolicy):
 
         # Forward RTC kwargs (prev_chunk_left_over, inference_delay, execution_horizon)
         for k, v in rtc_kwargs.items():
-            if v is not None and self._is_pytorch_model and isinstance(v, np.ndarray):
-                sample_kwargs[k] = torch.from_numpy(v).to(self._pytorch_device)
+            if v is not None and self._is_pytorch_model:
+                if isinstance(v, np.ndarray):
+                    sample_kwargs[k] = torch.from_numpy(v).to(self._pytorch_device)
+                elif isinstance(v, np.generic):
+                    sample_kwargs[k] = v.item()
+                else:
+                    sample_kwargs[k] = v
             else:
                 sample_kwargs[k] = v
 

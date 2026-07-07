@@ -1,5 +1,5 @@
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import flax.nnx as nnx
 import jax

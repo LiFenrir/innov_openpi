@@ -4,6 +4,7 @@
 # ...
 """Visualization utilities for RTC debug information."""
 
+import numpy as np
 import torch
 
 
@@ -22,7 +23,6 @@ class RTCDebugVisualizer:
         marker: str | None = None,
         markersize: int = 4,
     ):
-        import numpy as np
 
         if tensor is None:
             return
