@@ -26,11 +26,7 @@ class RTCDebugVisualizer:
 
         if tensor is None:
             return
-        tensor_np = (
-            tensor.detach().cpu().numpy()
-            if isinstance(tensor, torch.Tensor)
-            else tensor
-        )
+        tensor_np = tensor.detach().cpu().numpy() if isinstance(tensor, torch.Tensor) else tensor
         if tensor_np.ndim == 3:
             tensor_np = tensor_np[0]
         elif tensor_np.ndim == 1:
@@ -44,16 +40,23 @@ class RTCDebugVisualizer:
             ax = axes[dim_idx] if hasattr(axes, "__len__") else axes
             if marker:
                 ax.plot(
-                    x_indices, tensor_np[:, dim_idx],
-                    color=color, label=label if dim_idx == 0 else "",
-                    alpha=alpha, linewidth=linewidth,
-                    marker=marker, markersize=markersize,
+                    x_indices,
+                    tensor_np[:, dim_idx],
+                    color=color,
+                    label=label if dim_idx == 0 else "",
+                    alpha=alpha,
+                    linewidth=linewidth,
+                    marker=marker,
+                    markersize=markersize,
                 )
             else:
                 ax.plot(
-                    x_indices, tensor_np[:, dim_idx],
-                    color=color, label=label if dim_idx == 0 else "",
-                    alpha=alpha, linewidth=linewidth,
+                    x_indices,
+                    tensor_np[:, dim_idx],
+                    color=color,
+                    label=label if dim_idx == 0 else "",
+                    alpha=alpha,
+                    linewidth=linewidth,
                 )
             if not ax.xaxis.get_label().get_text():
                 ax.set_xlabel("Step", fontsize=10)

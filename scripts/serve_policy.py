@@ -46,17 +46,16 @@ class Args:
     # Port to serve the policy on.
     port: int = 8000
 
-    # Number of action steps to return per inference. Defaults to model's full action_horizon.
-    action_chunk: int | None = None
+    # Number of action steps to return per inference. Defaults to 50 for RTC buffering.
+    action_chunk: int | None = 50
 
     # Enable Real-Time Chunking (RTC) for temporal action smoothing.
     # When enabled, the server expects clients to send prev_chunk_left_over /
     # inference_delay / execution_horizon in the RTC protocol envelope.
     rtc: bool = False
 
-    # RTC execution horizon — how many steps of the previous chunk's tail to target
-    # with the guidance correction (default: 10).
-    rtc_execution_horizon: int = 10
+    # RTC constraint window (= smooth_window) — guidance overlap + client blend steps.
+    rtc_execution_horizon: int = 13
 
     # Record the policy's behavior for debugging.
     record: bool = False

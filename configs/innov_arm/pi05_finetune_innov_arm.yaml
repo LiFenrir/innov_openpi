@@ -1,30 +1,30 @@
-# LeRobot pi05 Supervised Fine-Tuning Configuration (bi_s1)
+# LeRobot pi05 Supervised Fine-Tuning Configuration (innov_arm)
 # =================================================
 # Usage:
 #   # Single GPU:
-#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune.yaml
-#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune.yaml --exp_name my_run
+#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune_innov_arm.yaml
+#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune_innov_arm.yaml --exp_name my_run
 #
 #   # Multi-GPU DDP (single node):
-#   torchrun --standalone --nnodes=1 --nproc_per_node=4 \\
-#       scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune.yaml
+#   torchrun --standalone --nnodes=1 --nproc_per_node=4 \
+#       scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune_innov_arm.yaml
 #
 #   # Multi-Node DDP:
-#   torchrun --nnodes=2 --nproc_per_node=8 --node_rank=0 \\
-#       --master_addr=<ip> --master_port=29500 \\
-#       scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune.yaml
+#   torchrun --nnodes=2 --nproc_per_node=8 --node_rank=0 \
+#       --master_addr=<ip> --master_port=29500 \
+#       scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune_innov_arm.yaml
 #
 # All hyperparameters are specified directly in this YAML file.
 # CLI overrides are supported for any field:
-#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune.yaml --batch-size 64
+#   python scripts/train_pytorch.py --config configs/bi_s1/pi05_finetune_innov_arm.yaml --batch-size 64
 #
 # DDP notes:
 #   - ``batch_size`` is the GLOBAL batch size; each GPU receives batch_size / world_size samples.
 #   - DDP is enabled automatically when WORLD_SIZE > 1 (set by torchrun).
 #   - Checkpoints, wandb logging, and progress bar are rank-0 only.
 
-name: bi_s1_pi05_sft
-exp_name: bi_s1_finetune_001
+name: innov_arm_pi05_sft
+exp_name: innov_arm_sft_001
 
 # ── Model ───────────────────────────────────────────────
 model:
@@ -44,11 +44,11 @@ model:
 # ── Data ────────────────────────────────────────────────
 data:
   _target_: LeRobotDataConfig
-  repo_id: /home/kemove/VLA/datasets/bi_s1/bi_s1_0706_stacked
-  robot_type: bi_s1
-  default_prompt: "Grasp a single layer of the cloth with the gripper, then place the cloth onto the board"
+  repo_id: /home/kemove/INNOV/datasets/innov_arm/innov_arm_sft
+  robot_type: bi_innov_arm_v1
+  default_prompt: "pick cloth, load into fabric printer"
   assets:
-    asset_id: bi_s1_0706_stacked
+    asset_id: innov_arm_sft
   camera_map:
     front: base_0_rgb
     left_wrist: left_wrist_0_rgb
@@ -76,14 +76,12 @@ optimizer:
   clip_gradient_norm: 1.0
 
 # ── Training ────────────────────────────────────────────
-batch_size: 32
+batch_size: 64 
 num_train_steps: 30000
 seed: 42
 log_interval: 100
-save_interval: 1000
+save_interval: 2000
 keep_period: 2000
-# If the value is greater than 1, FSDP will be enabled and shard across number of specified devices.
-# DDP (via torchrun) is preferred for most multi-GPU setups; use FSDP only when model exceeds single-GPU VRAM.
 fsdp_devices: 1
 
 wandb_enabled: false

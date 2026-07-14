@@ -1,8 +1,6 @@
-"""Actor network with VLA reference action conditioning.
+"""Actor 网络（VLA 参考 + 学习残差）。
 
-The actor takes the RL state x = cat(z_rl, s^p) and a VLA reference action
-chunk a_tilde, applies reference dropout during training, and outputs an
-action chunk mu (plus optional Gaussian exploration noise).
+确定性前向；探索噪声由 RolloutWorker 在 rollout 时显式添加。
 """
 
 import torch
@@ -12,20 +10,18 @@ from rlt.models.networks import MLP
 
 
 class Actor(nn.Module):
-    """Actor with reference action dropout and exploration noise.
+    """VLA 参考 + 学习残差的 Actor。
 
-    Input: cat(x, a_tilde_masked) where a_tilde is zeroed for a fraction
-    of the batch during training (ref_dropout probability).
-
-    Output: mu + N(0, sigma^2) during training, mu during eval.
+    forward 始终返回确定性 μ；探索噪声由 RolloutWorker 显式添加，
+    与 TD3 actor loss 计算（确定性动作）彻底解耦。
 
     Args:
-        state_dim: Dimension of RL state (z_rl + s^p).
-        action_chunk_dim: Dimension of flattened action chunk (C * d).
-        hidden_dim: MLP hidden layer width.
-        num_hidden_layers: Number of MLP hidden layers.
-        sigma: Exploration noise std (applied during training only).
-        ref_dropout: Probability of zeroing reference actions during training.
+        state_dim: RL state 维度 (z_rl + s^p)。
+        action_chunk_dim: 展平动作块维度 (C * d)。
+        hidden_dim: MLP 隐藏层宽度。
+        num_hidden_layers: MLP 隐藏层数。
+        sigma: 探索噪声标准差（仅 rollout 侧使用）。
+        ref_dropout: training 时清零参考动作的概率。
     """
 
     def __init__(
@@ -56,25 +52,22 @@ class Actor(nn.Module):
         nn.init.zeros_(last_linear.bias)
 
     def forward(self, x: Tensor, a_tilde: Tensor) -> Tensor:
-        """Compute action chunk as VLA reference + learned residual.
+        """确定性前向：VLA 参考 + 学习残差。
+
+        Actor loss / TD target 用确定性动作；探索噪声由调用方在 rollout 时显式添加。
 
         Args:
-            x: RL state [B, state_dim].
-            a_tilde: Flattened VLA reference action chunk [B, action_chunk_dim].
+            x: RL state [B, state_dim]。
+            a_tilde: VLA 参考动作块 [B, action_chunk_dim]。
 
         Returns:
-            Action chunk [B, action_chunk_dim], clamped to [-1, 1].
-            During training: a_tilde + residual + noise, with ref dropout.
-            During eval: a_tilde + residual, with full a_tilde.
+            mu: 动作块 [B, action_chunk_dim]，clamp 到 [-1, 1]。
+            training 时应用 ref_dropout。
         """
         a_tilde_input = self._apply_ref_dropout(a_tilde)
         residual = self.mlp(torch.cat([x, a_tilde_input], dim=-1))
-        mu = a_tilde + residual
-
-        if self.training:
-            noise = torch.randn_like(mu) * self.sigma
-            return (mu + noise).clamp(-1.0, 1.0)
-        return mu.clamp(-1.0, 1.0)
+        mu = (a_tilde + residual).clamp(-1.0, 1.0)
+        return mu
 
     def _apply_ref_dropout(self, a_tilde: Tensor) -> Tensor:
         """Zero out reference actions for a fraction of the batch during training."""

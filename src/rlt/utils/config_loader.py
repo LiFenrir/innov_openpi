@@ -70,6 +70,8 @@ def _dict_to_dataclass(data: dict[str, Any], cls: type[T]) -> T:
 def load_config_from_yaml(yaml_path: str, config_cls: type[T]) -> T:
     """Load a dataclass config from a YAML file.
 
+    Supports both old flat-format YAML (auto-migrated) and new nested format.
+
     Args:
         yaml_path: Path to the YAML file.
         config_cls: Target dataclass type.
@@ -82,6 +84,21 @@ def load_config_from_yaml(yaml_path: str, config_cls: type[T]) -> T:
 
     if not isinstance(raw, dict):
         raise ValueError(f"YAML config must be a dict, got {type(raw).__name__}")
+
+    # Auto-detect old format and migrate
+    from rlt.training.config import migrate_online_rl_config, migrate_rl_token_config
+    from rlt.training.config import OnlineRLTrainConfig as _ORC, RLTokenTrainConfig as _RTC
+
+    if config_cls is _ORC:
+        migrated = migrate_online_rl_config(raw)
+        if isinstance(migrated, _ORC):
+            return migrated
+        raw = migrated  # dict (new nested format)
+    elif config_cls is _RTC:
+        migrated = migrate_rl_token_config(raw)
+        if isinstance(migrated, _RTC):
+            return migrated
+        raw = migrated  # dict (new nested format)
 
     return _dict_to_dataclass(raw, config_cls)
 

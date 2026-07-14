@@ -57,16 +57,12 @@ def reanchor_relative_rtc_prefix(
     # Convert: prev_action_abs → prev_action_rel = prev_action_abs - state
     relative_actions = action_cpu.clone()
     if state.shape[-1] == action_dim:
-        relative_actions[:, relative_mask] = (
-            action_cpu[:, relative_mask] - state[:, relative_mask]
-        )
+        relative_actions[:, relative_mask] = action_cpu[:, relative_mask] - state[:, relative_mask]
     else:
         # state dim != action dim — only apply to overlapping dims
         n = min(state.shape[-1], action_dim)
         rel_mask_sub = relative_mask[:n]
-        relative_actions[:, :n][:, rel_mask_sub] = (
-            action_cpu[:, :n][:, rel_mask_sub] - state[:, :n][:, rel_mask_sub]
-        )
+        relative_actions[:, :n][:, rel_mask_sub] = action_cpu[:, :n][:, rel_mask_sub] - state[:, :n][:, rel_mask_sub]
 
     # Optional normalization: (x - mean) / std
     if norm_scale is not None:

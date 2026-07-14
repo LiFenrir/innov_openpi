@@ -319,7 +319,7 @@ def main() -> None:
     # 维度参数优先级: CLI > config > 默认
     action_dim = args.action_dim or (config.action_dim if config else 8)
     chunk_length = args.chunk_length or (config.chunk_length if config else 10)
-    embedding_dim = args.embedding_dim or (config.embedding_dim if config else 2048)
+    embedding_dim = args.embedding_dim or (config.rl_arch.embedding_dim if config else 2048)
     state_dim = embedding_dim + action_dim
     action_chunk_dim = chunk_length * action_dim
     buffer_capacity = args.buffer_capacity

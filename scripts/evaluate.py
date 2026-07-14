@@ -41,7 +41,7 @@ from rlt.models.actor import Actor
 from rlt.rollout.factory import make_env
 from rlt.rollout.intervention import InterventionManager
 from rlt.rollout.rollout_worker import RolloutWorker
-from rlt.training.config import OnlineRLTrainConfig
+from rlt.training.config import OnlineRLTrainConfig, migrate_online_rl_config
 from rlt.training.replay_buffer import ReplayBuffer
 from rlt.utils.checkpoint import load_rl_token_model
 from openpi.training.vla_wrapper import VLAWrapper
@@ -75,7 +75,7 @@ class EvalConfig:
 def _run(config: EvalConfig) -> None:
     """Evaluate full pipeline: VLA + RL token + actor."""
     ckpt = torch.load(config.checkpoint, map_location=config.device, weights_only=False)
-    train_config: OnlineRLTrainConfig = ckpt["config"]
+    train_config = migrate_online_rl_config(ckpt["config"])
 
     vla = VLAWrapper(
         checkpoint_path=config.vla_checkpoint_dir,
@@ -89,9 +89,9 @@ def _run(config: EvalConfig) -> None:
     actor = Actor(
         state_dim=train_config.state_dim,
         action_chunk_dim=train_config.action_chunk_dim,
-        hidden_dim=train_config.mlp_hidden_dim,
-        num_hidden_layers=train_config.mlp_num_hidden_layers,
-        sigma=train_config.actor_noise_sigma,
+        hidden_dim=train_config.rl_arch.mlp_hidden_dim,
+        num_hidden_layers=train_config.rl_arch.mlp_num_hidden_layers,
+        sigma=train_config.rl_arch.actor_noise_sigma,
         ref_dropout=0.0,
     ).to(config.device)
     actor.load_state_dict(ckpt["actor"])

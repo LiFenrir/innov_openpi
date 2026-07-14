@@ -65,27 +65,27 @@ class OnlineRLTrainer:
         self.actor = Actor(
             state_dim=config.state_dim,
             action_chunk_dim=config.action_chunk_dim,
-            hidden_dim=config.mlp_hidden_dim,
-            num_hidden_layers=config.mlp_num_hidden_layers,
-            sigma=config.actor_noise_sigma,
-            ref_dropout=config.ref_action_dropout,
+            hidden_dim=config.rl_arch.mlp_hidden_dim,
+            num_hidden_layers=config.rl_arch.mlp_num_hidden_layers,
+            sigma=config.rl_arch.actor_noise_sigma,
+            ref_dropout=config.rl_arch.ref_action_dropout,
         ).to(self.device)
 
         # Trainable twin Q-critic
         self.critic = TwinQCritic(
             state_dim=config.state_dim,
             action_chunk_dim=config.action_chunk_dim,
-            hidden_dim=config.mlp_hidden_dim,
-            num_hidden_layers=config.mlp_num_hidden_layers,
+            hidden_dim=config.rl_arch.mlp_hidden_dim,
+            num_hidden_layers=config.rl_arch.mlp_num_hidden_layers,
         ).to(self.device)
 
         # Optimizers
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.actor_lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.optimizer.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.optimizer.critic_lr)
 
         # Replay buffer
         self.replay_buffer = ReplayBuffer(
-            capacity=config.buffer_capacity,
+            capacity=config.buffer.capacity,
             state_dim=config.state_dim,
             action_chunk_dim=config.action_chunk_dim,
             chunk_length=config.chunk_length,
@@ -128,7 +128,7 @@ class OnlineRLTrainer:
             Dict of logged metrics.
         """
         cfg = self.config
-        batch = self.replay_buffer.sample(batch_size=cfg.batch_size, device=str(self.device))
+        batch = self.replay_buffer.sample(batch_size=cfg.buffer.batch_size, device=str(self.device))
 
         x = batch["x"]
         a = batch["a"]
@@ -148,10 +148,10 @@ class OnlineRLTrainer:
             next_a_tilde=a_tilde,  # approximate next reference
             actor=self.actor,
             critic=self.critic,
-            gamma=cfg.gamma,
+            gamma=cfg.td3.gamma,
             chunk_length=cfg.chunk_length,
-            target_noise_sigma=cfg.target_noise_sigma,
-            target_noise_clip=cfg.target_noise_clip,
+            target_noise_sigma=cfg.td3.target_noise_sigma,
+            target_noise_clip=cfg.td3.target_noise_clip,
         )
 
         q1, q2 = self.critic(x, a)
@@ -168,11 +168,11 @@ class OnlineRLTrainer:
         }
 
         # --- Actor update (delayed) ---
-        if update_idx % cfg.critic_updates_per_actor == 0:
+        if update_idx % cfg.td3.critic_updates_per_actor == 0:
             self.actor.train()
             a_actor = self.actor(x, a_tilde)
             q_value = self.critic.q_min(x, a_actor)
-            a_loss = actor_loss(q_value, a_actor, a_tilde, cfg.bc_regularizer_beta)
+            a_loss = actor_loss(q_value, a_actor, a_tilde, cfg.td3.bc_regularizer_beta)
 
             self.actor_optimizer.zero_grad()
             a_loss.backward()
@@ -181,7 +181,7 @@ class OnlineRLTrainer:
             metrics["actor_loss"] = a_loss.item()
 
         # --- Polyak target update ---
-        self.critic.update_targets(cfg.tau)
+        self.critic.update_targets(cfg.td3.tau)
 
         self._total_updates += 1
         return metrics
@@ -207,12 +207,12 @@ class OnlineRLTrainer:
 
         if main:
             display.training_start({
-                "Task": cfg.task_prompt or "(not set)",
+                "Task": cfg.env.task_prompt or "(not set)",
                 "Max env steps": f"{cfg.max_env_steps:,}",
-                "UTD ratio": str(cfg.utd_ratio),
+                "UTD ratio": str(cfg.td3.utd_ratio),
                 "Chunk length": str(cfg.chunk_length),
                 "Action dim": str(cfg.action_dim),
-                "Run name": cfg.run_name,
+                "Run name": cfg.checkpoint.run_name,
             })
 
         # Phase 1: Warmup with VLA-only policy (skip if buffer already has data)
@@ -222,14 +222,14 @@ class OnlineRLTrainer:
                     "Skipping warmup — replay buffer already has %d transitions (resumed from checkpoint)",
                     self.replay_buffer.size,
                 )
-        elif cfg.warmup_buffer:
-            self._load_warmup_buffer(cfg.warmup_buffer)
+        elif cfg.checkpoint.warmup_buffer:
+            self._load_warmup_buffer(cfg.checkpoint.warmup_buffer)
         else:
             if main:
-                display.warmup_start(cfg.warmup_steps)
+                display.warmup_start(cfg.buffer.warmup_steps)
             stored = 0
             obs = env.reset()
-            for i in range(cfg.warmup_steps):
+            for i in range(cfg.buffer.warmup_steps):
                 action_chunk = worker._get_warmup_action(obs)
                 x, a_tilde_flat = worker._extract_rl_state(obs)
                 a_flat = action_chunk.reshape(-1)
@@ -242,7 +242,7 @@ class OnlineRLTrainer:
                 stored += 1
                 self._total_env_steps += cfg.chunk_length
                 if main:
-                    display.warmup_progress(i + 1, cfg.warmup_steps)
+                    display.warmup_progress(i + 1, cfg.buffer.warmup_steps)
                 if done:
                     obs = env.reset()
                 else:
@@ -292,7 +292,7 @@ class OnlineRLTrainer:
 
             # Update actor and critic (UTD ratio G)
             update_metrics: dict[str, float] = {}
-            for g in range(cfg.utd_ratio):
+            for g in range(cfg.td3.utd_ratio):
                 step_metrics = self._update_step(g)
                 update_metrics = step_metrics
 
@@ -312,7 +312,7 @@ class OnlineRLTrainer:
             if log_fn is not None:
                 log_fn(all_metrics)
 
-            if self._total_episodes % cfg.save_every == 0:
+            if self._total_episodes % cfg.checkpoint.save_every == 0:
                 ckpt_path = self.save()
                 if main and ckpt_path is not None:
                     display.checkpoint_saved(str(ckpt_path))
@@ -330,7 +330,8 @@ class OnlineRLTrainer:
 
     def _save_warmup_buffer(self) -> Path:
         """Save the replay buffer as a standalone file after warmup."""
-        save_dir = Path(self.config.save_dir) / self.config.run_name
+        ckpt = self.config.checkpoint
+        save_dir = Path(ckpt.save_dir) / ckpt.run_name
         save_dir.mkdir(parents=True, exist_ok=True)
         buf_path = save_dir / "warmup_buffer.pt"
         torch.save(self.replay_buffer.state_dict(), buf_path)
@@ -349,7 +350,7 @@ class OnlineRLTrainer:
         When DDP is active, only rank 0 writes the checkpoint.
 
         Args:
-            path: Override save path. Defaults to config.save_dir.
+            path: Override save path. Defaults to config.checkpoint.save_dir.
             save_buffer: Whether to include replay buffer in the checkpoint.
                 Disable for eval-only checkpoints to save disk space.
 
@@ -361,7 +362,8 @@ class OnlineRLTrainer:
                 dist.barrier()
             return None
 
-        save_dir = Path(path or self.config.save_dir) / self.config.run_name
+        ckpt_cfg = self.config.checkpoint
+        save_dir = Path(path or ckpt_cfg.save_dir) / ckpt_cfg.run_name
         save_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = save_dir / f"online_rl_ep{self._total_episodes}.pt"
         payload: dict[str, Any] = {

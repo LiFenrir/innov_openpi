@@ -135,12 +135,22 @@ class Policy(BasePolicy):
 
         # Log inference result: action shape, chunk size, and first action data
         result_actions = outputs["actions"]
+        rtc_info = ""
+        if rtc_kwargs.get("prev_chunk_left_over") is not None:
+            plo = rtc_kwargs["prev_chunk_left_over"]
+            delay = rtc_kwargs.get("inference_delay", "?")
+            horizon = rtc_kwargs.get("execution_horizon", "?")
+            rtc_info = (
+                f" | RTC prev_shape=({plo.shape[-2]},{plo.shape[-1]})"
+                f" delay={delay} horizon={horizon}"
+            )
         logging.info(
-            "infer | time=%5.0fms | action_dim=%d | chunk=%d | first_action=[%s]",
+            "infer | time=%5.0fms | action_dim=%d | chunk=%d | first_action=[%s]%s",
             model_time * 1000,
             result_actions.shape[-1],
             result_actions.shape[-2],
             np.array2string(result_actions[0], precision=4, suppress_small=True, max_line_width=200),
+            rtc_info,
         )
         return outputs
 

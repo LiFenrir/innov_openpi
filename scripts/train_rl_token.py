@@ -117,7 +117,7 @@ def main(config: TrainConfig) -> None:
 
     if main:
         # Set up file logging BEFORE any log messages so they all go to run.log
-        log_dir = Path(config.train.save_dir) / config.train.run_name
+        log_dir = Path(config.train.checkpoint.save_dir) / config.train.checkpoint.run_name
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Tee stdout/stderr to run.log (captures tqdm, print, everything) ──
@@ -169,7 +169,7 @@ def main(config: TrainConfig) -> None:
         log.info("DDP: %s, device: %s", "enabled" if use_ddp else "disabled", device)
 
     data_transforms = _resolve_data_transforms(
-        config.data_transforms_fn, config.train.vla_config_name
+        config.data_transforms_fn, config.train.checkpoint.vla_config_name
     )
 
     # VLA is loaded only on the main process's device; its weights are
@@ -178,12 +178,12 @@ def main(config: TrainConfig) -> None:
     if main:
         log.info(
             "Loading VLA: config=%s, checkpoint=%s",
-            config.train.vla_config_name,
-            config.train.vla_checkpoint_dir,
+            config.train.checkpoint.vla_config_name,
+            config.train.checkpoint.vla_checkpoint_dir,
         )
     vla = VLAWrapper(
-        checkpoint_path=config.train.vla_checkpoint_dir,
-        config_name=config.train.vla_config_name,
+        checkpoint_path=config.train.checkpoint.vla_checkpoint_dir,
+        config_name=config.train.checkpoint.vla_config_name,
         device=device,
         data_transforms=data_transforms,
     )
@@ -199,9 +199,9 @@ def main(config: TrainConfig) -> None:
     if main:
         log.info("Loading demo dataset: %s", config.repo_id)
     data_loader = build_data_loader(
-        openpi_config_name=config.train.vla_config_name,
+        openpi_config_name=config.train.checkpoint.vla_config_name,
         repo_id=config.repo_id,
-        batch_size=config.train.batch_size,
+        batch_size=config.train.training.batch_size,
         num_workers=config.num_workers,
         shuffle=True,
         data_transforms=data_transforms,

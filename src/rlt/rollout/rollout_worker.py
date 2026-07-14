@@ -142,20 +142,26 @@ class RolloutWorker:
 
     @torch.no_grad()
     def _get_actor_action(self, x: NDArray, a_tilde_flat: NDArray) -> NDArray:
-        """Get action from the RL actor.
+        """从 RL actor 获取动作（含探索噪声）。
+
+        Actor.forward 返回确定性 μ；探索噪声在此处显式添加，与 TD3 的
+        actor loss 计算解耦。
 
         Args:
-            x: RL state [state_dim].
-            a_tilde_flat: Flattened VLA reference chunk [action_chunk_dim].
+            x: RL state [state_dim]。
+            a_tilde_flat: VLA 参考动作块 [action_chunk_dim]。
 
         Returns:
-            action_chunk: [C, action_dim] numpy array.
+            action_chunk: [C, action_dim] numpy 数组。
         """
         x_t = torch.as_tensor(x, dtype=torch.float32, device=self.device).unsqueeze(0)
         a_tilde_t = torch.as_tensor(a_tilde_flat, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-        a_flat = self.actor(x_t, a_tilde_t)  # [1, C*d]
-        return a_flat.squeeze(0).cpu().numpy().reshape(self.chunk_length, self.action_dim)
+        mu = self.actor(x_t, a_tilde_t)  # [1, C*d] 确定性输出
+        if self.actor.sigma > 0:
+            noise = torch.randn_like(mu) * self.actor.sigma
+            mu = (mu + noise).clamp(-1.0, 1.0)
+        return mu.squeeze(0).cpu().numpy().reshape(self.chunk_length, self.action_dim)
 
     def collect_warmup(self, num_chunks: int) -> int:
         """Run VLA-only policy and store transitions in the replay buffer.

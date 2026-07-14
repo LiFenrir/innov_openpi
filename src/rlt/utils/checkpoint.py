@@ -7,6 +7,7 @@ import logging
 import torch
 
 from rlt.models.rl_token import RLTokenModel
+from rlt.training.config import migrate_rl_token_config
 
 log = logging.getLogger(__name__)
 
@@ -15,26 +16,25 @@ def load_rl_token_model(
     ckpt_path: str,
     device: str = "cuda",
 ) -> RLTokenModel:
-    """Load a trained RL token model from a Stage 1 checkpoint.
+    """从 Stage 1 checkpoint 加载 RL token 模型。
 
-    The encoder/decoder architecture hypers are read from the saved config,
-    so no external config object is needed.
+    架构参数从 checkpoint 中保存的 config 读取，支持新旧两种格式。
 
     Args:
-        ckpt_path: Path to the Stage 1 ``.pt`` checkpoint.
-        device: Torch device to load onto.
+        ckpt_path: Stage 1 ``.pt`` checkpoint 路径。
+        device: 加载到的 torch 设备。
 
     Returns:
-        Frozen ``RLTokenModel`` with weights restored.
+        冻结的 ``RLTokenModel``。
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    saved_config = ckpt["config"]
+    saved_config = migrate_rl_token_config(ckpt["config"])
     model = RLTokenModel(
-        embedding_dim=saved_config.embedding_dim,
-        encoder_layers=saved_config.encoder_layers,
-        encoder_heads=saved_config.encoder_heads,
-        decoder_layers=saved_config.decoder_layers,
-        decoder_heads=saved_config.decoder_heads,
+        embedding_dim=saved_config.arch.embedding_dim,
+        encoder_layers=saved_config.arch.encoder_layers,
+        encoder_heads=saved_config.arch.encoder_heads,
+        decoder_layers=saved_config.arch.decoder_layers,
+        decoder_heads=saved_config.arch.decoder_heads,
     )
     model.load_state_dict(ckpt["model"])
     step = ckpt["step"]

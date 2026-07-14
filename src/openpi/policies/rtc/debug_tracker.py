@@ -32,9 +32,7 @@ class DebugStep:
         result = {
             "step_idx": self.step_idx,
             "guidance_weight": (
-                self.guidance_weight.item()
-                if isinstance(self.guidance_weight, Tensor)
-                else self.guidance_weight
+                self.guidance_weight.item() if isinstance(self.guidance_weight, Tensor) else self.guidance_weight
             ),
             "time": self.time.item() if isinstance(self.time, Tensor) else self.time,
             "inference_delay": self.inference_delay,

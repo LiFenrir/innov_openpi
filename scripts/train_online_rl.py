@@ -64,21 +64,22 @@ def main(config: OnlineRLTrainConfig) -> None:
 
     # Load frozen VLA
     if main:
-        log.info("Loading VLA: config=%s, checkpoint=%s", config.vla_config_name, config.vla_checkpoint_dir)
+        log.info("Loading VLA: config=%s, checkpoint=%s",
+                 config.checkpoint.vla_config_name, config.checkpoint.vla_checkpoint_dir)
     vla = VLAWrapper(
-        checkpoint_path=config.vla_checkpoint_dir,
-        config_name=config.vla_config_name,
+        checkpoint_path=config.checkpoint.vla_checkpoint_dir,
+        config_name=config.checkpoint.vla_config_name,
         device=device,
     )
 
     # Load frozen RL token model from Stage 1
     if main:
-        log.info("Loading RL token model from %s", config.rl_token_checkpoint)
-    rl_token_model = load_rl_token_model(config.rl_token_checkpoint, device=device)
+        log.info("Loading RL token model from %s", config.checkpoint.rl_token_checkpoint)
+    rl_token_model = load_rl_token_model(config.checkpoint.rl_token_checkpoint, device=device)
 
     # Restore fine-tuned VLA weights from Stage 1 checkpoint (if available).
     # Load to CPU first to avoid OOM — the VLA + RL token already occupy most VRAM.
-    stage1_ckpt = torch.load(config.rl_token_checkpoint, map_location="cpu", weights_only=False)
+    stage1_ckpt = torch.load(config.checkpoint.rl_token_checkpoint, map_location="cpu", weights_only=False)
     if "vla_model" in stage1_ckpt:
         vla.pi0.load_state_dict(stage1_ckpt["vla_model"])
         if main:
@@ -98,32 +99,32 @@ def main(config: OnlineRLTrainConfig) -> None:
     )
 
     # Resume from checkpoint if provided
-    if config.resume_checkpoint:
+    if config.checkpoint.resume_checkpoint:
         if main:
-            log.info("Resuming from checkpoint: %s", config.resume_checkpoint)
-        trainer.load(config.resume_checkpoint)
+            log.info("Resuming from checkpoint: %s", config.checkpoint.resume_checkpoint)
+        trainer.load(config.checkpoint.resume_checkpoint)
 
     # Create environment via pluggable factory (rank 0 only).
-    if not config.env_factory:
+    if not config.env.env_factory:
         log.error("--env-factory is required. Provide a Python import path to an env factory function.")
         raise SystemExit(1)
 
     env = make_env(
-        config.env_factory,
+        config.env.env_factory,
         action_dim=config.action_dim,
         chunk_length=config.chunk_length,
-        task_prompt=config.task_prompt,
-        max_episode_chunks=config.max_episode_chunks,
+        task_prompt=config.env.task_prompt,
+        max_episode_chunks=config.env.max_episode_chunks,
     )
     if main:
         log.info("Environment created: action_dim=%d, chunk_length=%d", env.action_dim, env.chunk_length)
 
     # Create intervention manager (VR teleoperation, etc.) if specified.
     intervention_mgr: InterventionManager | None = None
-    if config.intervention_factory:
-        intervention_mgr = make_intervention(config.intervention_factory, env=env)
+    if config.env.intervention_factory:
+        intervention_mgr = make_intervention(config.env.intervention_factory, env=env)
         if main:
-            log.info("Intervention manager created via %s", config.intervention_factory)
+            log.info("Intervention manager created via %s", config.env.intervention_factory)
 
     trainer.train(env=env, intervention_mgr=intervention_mgr, log_fn=rl_logger.log if rl_logger else None)
 

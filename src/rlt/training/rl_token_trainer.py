@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 class RLTokenTrainer:
     """Stage 1 trainer for the RL token encoder-decoder.
 
-    Mode is selected automatically by ``config.vla_finetune_alpha``:
+    Mode is selected automatically by ``config.training.vla_finetune_alpha``:
     - alpha == 0: frozen VLA, trains encoder-decoder only.
     - alpha > 0:  joint training, fine-tunes VLA alongside encoder-decoder.
 
@@ -73,11 +73,11 @@ class RLTokenTrainer:
 
         # Build RL token model
         self.model = RLTokenModel(
-            embedding_dim=config.embedding_dim,
-            encoder_layers=config.encoder_layers,
-            encoder_heads=config.encoder_heads,
-            decoder_layers=config.decoder_layers,
-            decoder_heads=config.decoder_heads,
+            embedding_dim=config.arch.embedding_dim,
+            encoder_layers=config.arch.encoder_layers,
+            encoder_heads=config.arch.encoder_heads,
+            decoder_layers=config.arch.decoder_layers,
+            decoder_heads=config.arch.decoder_heads,
         ).to(self.device)
 
         # Optimizer for the RL token model (created BEFORE DDP wrapping so
@@ -85,8 +85,8 @@ class RLTokenTrainer:
         # forward() redirects gradients back to them automatically).
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.peak_lr,
-            weight_decay=config.weight_decay,
+            lr=config.training.peak_lr,
+            weight_decay=config.training.weight_decay,
         )
         # LR is set per-step via _compute_lr(), matching OpenPI's train_pytorch.py pattern.
         # No torch.optim.lr_scheduler is used.
@@ -109,7 +109,7 @@ class RLTokenTrainer:
     @property
     def joint(self) -> bool:
         """Whether the trainer is in joint training mode."""
-        return self.config.vla_finetune_alpha > 0
+        return self.config.training.vla_finetune_alpha > 0
 
     def _unwrap_model(self) -> RLTokenModel:
         """Return the underlying model, unwrapping DDP if needed."""
@@ -160,7 +160,8 @@ class RLTokenTrainer:
             dataloader: Infinite iterator yielding (observations, actions).
             log_fn: Optional callable ``log_fn(metrics_dict)`` for logging.
         """
-        alpha = self.config.vla_finetune_alpha
+        train_cfg = self.config.training
+        alpha = train_cfg.vla_finetune_alpha
         main = is_main_process()
 
         if self.joint:
@@ -168,35 +169,35 @@ class RLTokenTrainer:
             if main:
                 logger.info(
                     "Starting Stage 1 joint training for %d steps (alpha=%.3f)",
-                    self.config.num_train_steps,
+                    train_cfg.num_train_steps,
                     alpha,
                 )
         elif main:
             logger.info(
                 "Starting Stage 1 frozen-VLA training for %d steps",
-                self.config.num_train_steps,
+                train_cfg.num_train_steps,
             )
 
         if main:
             logger.info(
                 "LR schedule: warmup=%d, peak_lr=%.2e, decay_steps=%d, decay_lr=%.2e",
-                self.config.warmup_steps,
-                self.config.peak_lr,
-                self.config.decay_steps,
-                self.config.decay_lr,
+                train_cfg.warmup_steps,
+                train_cfg.peak_lr,
+                train_cfg.decay_steps,
+                train_cfg.decay_lr,
             )
 
-        if self.config.resume_checkpoint:
-            self.load(self.config.resume_checkpoint)
+        if self.config.checkpoint.resume_checkpoint:
+            self.load(self.config.checkpoint.resume_checkpoint)
             if main:
                 logger.info("Resumed from step %d", self._global_step)
 
         # Only show progress bar on rank 0 (single tqdm instance shared by loop + set_postfix)
         if main:
-            pbar = tqdm(range(1, self.config.num_train_steps + 1), desc="Stage 1")
+            pbar = tqdm(range(1, train_cfg.num_train_steps + 1), desc="Stage 1")
         else:
             pbar = None
-        for step_idx in (pbar if pbar is not None else range(1, self.config.num_train_steps + 1)):
+        for step_idx in (pbar if pbar is not None else range(1, train_cfg.num_train_steps + 1)):
             # Set epoch for DistributedSampler shuffling
             if self.use_ddp and hasattr(dataloader, "sampler"):
                 sampler = dataloader.sampler
@@ -211,7 +212,7 @@ class RLTokenTrainer:
 
             metrics = self.step(vla, observations, actions)
 
-            if (step_idx == 1 or step_idx % self.config.print_every == 0) and main:
+            if (step_idx == 1 or step_idx % self.config.checkpoint.print_every == 0) and main:
                 ts = dt.datetime.now(tz=dt.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
                 if self.joint:
                     msg = (
@@ -244,13 +245,13 @@ class RLTokenTrainer:
                     pbar.set_postfix(loss=f"{metrics['loss']:.4f}", lr=f"{metrics['lr']:.2e}")
 
             # wandb logging (every log_every steps, rank 0 only)
-            if step_idx % self.config.log_every == 0 and log_fn is not None and main:
+            if step_idx % self.config.checkpoint.log_every == 0 and log_fn is not None and main:
                 log_fn(metrics, step=metrics.get("step"))
 
-            if step_idx % self.config.save_every == 0:
+            if step_idx % self.config.checkpoint.save_every == 0:
                 self.save()
 
-        if self._global_step % self.config.save_every != 0:
+        if self._global_step % self.config.checkpoint.save_every != 0:
             self.save()
 
         if main:
@@ -267,7 +268,7 @@ class RLTokenTrainer:
         ranks return ``None``.
 
         Args:
-            path: Override save path. Defaults to config.save_dir.
+            path: Override save path. Defaults to config.checkpoint.save_dir.
 
         Returns:
             Path to the saved checkpoint, or ``None`` on non-zero ranks.
@@ -278,7 +279,8 @@ class RLTokenTrainer:
                 dist.barrier()
             return None
 
-        save_dir = Path(path or self.config.save_dir) / self.config.run_name
+        ckpt_cfg = self.config.checkpoint
+        save_dir = Path(path or ckpt_cfg.save_dir) / ckpt_cfg.run_name
         save_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = save_dir / f"rl_token_step{self._global_step}.pt"
         state = {
@@ -332,13 +334,14 @@ class RLTokenTrainer:
 
         Args:
             step: Current global step (0-indexed).
-            peak_lr: Override peak learning rate. Defaults to ``config.peak_lr``.
-            decay_lr: Override end learning rate. Defaults to ``config.decay_lr``.
+            peak_lr: Override peak learning rate. Defaults to ``config.training.peak_lr``.
+            decay_lr: Override end learning rate. Defaults to ``config.training.decay_lr``.
         """
-        warmup_steps = self.config.warmup_steps
-        _peak_lr = peak_lr if peak_lr is not None else self.config.peak_lr
-        _decay_lr = decay_lr if decay_lr is not None else self.config.decay_lr
-        decay_steps = self.config.decay_steps
+        train_cfg = self.config.training
+        warmup_steps = train_cfg.warmup_steps
+        _peak_lr = peak_lr if peak_lr is not None else train_cfg.peak_lr
+        _decay_lr = decay_lr if decay_lr is not None else train_cfg.decay_lr
+        decay_steps = train_cfg.decay_steps
 
         if step < warmup_steps:
             # Match JAX behavior: start from peak_lr / (warmup_steps + 1)
@@ -352,8 +355,9 @@ class RLTokenTrainer:
 
     def _setup_joint_training(self, vla: VLAWrapper) -> None:
         """Unfreeze VLA and create its optimizer (called once by train())."""
+        train_cfg = self.config.training
         vla.unfreeze()
-        if self.config.gradient_checkpointing:
+        if train_cfg.gradient_checkpointing:
             vla.pi0.gradient_checkpointing_enable()
             logger.info("Enabled gradient checkpointing on VLA")
         self._vla = vla
@@ -362,8 +366,8 @@ class RLTokenTrainer:
 
         self.vla_optimizer = torch.optim.AdamW(
             vla_params,
-            lr=self.config.vla_learning_rate,
-            weight_decay=self.config.weight_decay,
+            lr=train_cfg.vla_learning_rate,
+            weight_decay=train_cfg.weight_decay,
         )
         # VLA LR is set per-step via _compute_lr(), same as the RL token optimizer.
 
@@ -374,6 +378,7 @@ class RLTokenTrainer:
     ) -> dict[str, float]:
         """Frozen VLA step: extract embeddings (no grad) → L_ro only."""
         self.model.train()
+        train_cfg = self.config.training
 
         # Set LR for this step (matching OpenPI's train_pytorch.py pattern)
         lr = self._compute_lr(self._global_step)
@@ -391,7 +396,7 @@ class RLTokenTrainer:
         self.optimizer.zero_grad()
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            self._unwrap_model().parameters(), max_norm=self.config.max_grad_norm
+            self._unwrap_model().parameters(), max_norm=train_cfg.max_grad_norm
         )
         self.optimizer.step()
 
@@ -405,7 +410,8 @@ class RLTokenTrainer:
         actions: Tensor,
     ) -> dict[str, float]:
         """Joint step: single VLA forward → L_ro + alpha * L_vla."""
-        alpha = self.config.vla_finetune_alpha
+        train_cfg = self.config.training
+        alpha = train_cfg.vla_finetune_alpha
         self.model.train()
 
         # Set LR for this step (matching OpenPI's train_pytorch.py pattern)
@@ -413,7 +419,7 @@ class RLTokenTrainer:
         for pg in self.optimizer.param_groups:
             pg["lr"] = lr
         if self.vla_optimizer is not None:
-            vla_lr = self._compute_lr(self._global_step, peak_lr=self.config.vla_learning_rate)
+            vla_lr = self._compute_lr(self._global_step, peak_lr=train_cfg.vla_learning_rate)
             for pg in self.vla_optimizer.param_groups:
                 pg["lr"] = vla_lr
 
@@ -438,12 +444,12 @@ class RLTokenTrainer:
         total_loss.backward()
 
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            self._unwrap_model().parameters(), max_norm=self.config.max_grad_norm
+            self._unwrap_model().parameters(), max_norm=train_cfg.max_grad_norm
         )
         self.optimizer.step()
         if self.vla_optimizer is not None:
             vla_grad_norm = torch.nn.utils.clip_grad_norm_(
-                self._vla.trainable_parameters(), max_norm=self.config.max_grad_norm
+                self._vla.trainable_parameters(), max_norm=train_cfg.max_grad_norm
             )
             self.vla_optimizer.step()
         else:

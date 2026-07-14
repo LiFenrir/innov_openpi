@@ -69,14 +69,30 @@ class Logger:
 
     @staticmethod
     def from_train_config(train_config: Any) -> Logger:
-        """Create a Logger from a training config dataclass.
+        """从训练配置 dataclass 创建 Logger。
 
-        Reads ``wandb_project`` and ``wandb_enabled`` fields if present.
+        支持新旧两种格式：
+        - 新版: ``config.wandb.project`` / ``config.wandb.enabled``
+        - 旧版: ``config.wandb_project`` / ``config.wandb_enabled``（getattr 兜底）
         """
         cfg_dict = asdict(train_config) if hasattr(train_config, "__dataclass_fields__") else {}
-        logger_config = LoggerConfig(
-            project=getattr(train_config, "wandb_project", "rlt-openpi"),
-            enabled=getattr(train_config, "wandb_enabled", True),
-        )
-        run_name = getattr(train_config, "run_name", None) or None
+
+        # 新版嵌套格式优先
+        if hasattr(train_config, "wandb") and hasattr(train_config.wandb, "project"):
+            project = train_config.wandb.project
+            enabled = train_config.wandb.enabled
+        else:
+            # 旧版平铺格式（向后兼容）
+            project = getattr(train_config, "wandb_project", "rlt-openpi")
+            enabled = getattr(train_config, "wandb_enabled", True)
+
+        logger_config = LoggerConfig(project=project, enabled=enabled)
+
+        # run_name: 新版在 checkpoint.run_name，旧版在 run_name
+        run_name = None
+        if hasattr(train_config, "checkpoint") and hasattr(train_config.checkpoint, "run_name"):
+            run_name = train_config.checkpoint.run_name
+        if not run_name:
+            run_name = getattr(train_config, "run_name", None) or None
+
         return Logger(config=logger_config, run_config=cfg_dict, run_name=run_name)

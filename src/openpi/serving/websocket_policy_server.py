@@ -66,6 +66,16 @@ class WebsocketPolicyServer:
                     obs = raw_msg
                     rtc_kwargs = {}
 
+                if rtc_kwargs:
+                    logger.debug(
+                        "RTC kwargs received: prev_chunk_left_over=%s delay=%s horizon=%s",
+                        type(rtc_kwargs.get("prev_chunk_left_over")).__name__
+                        if rtc_kwargs.get("prev_chunk_left_over") is not None
+                        else "None",
+                        rtc_kwargs.get("inference_delay", "?"),
+                        rtc_kwargs.get("execution_horizon", "?"),
+                    )
+
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs, **rtc_kwargs)
                 infer_time = time.monotonic() - infer_time
